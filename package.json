@@ -1,0 +1,11 @@
+{
+  "name": "silknet",
+  "version": "1.0.0",
+  "description": "Silknet: Connect Browser AI to Local AI (ChatGPT, Claude, Gemini to VS Code & Terminal)",
+  "private": true,
+  "scripts": {
+    "start": "npm start --prefix server",
+    "build": "npm run build --prefix server && npm run compile --prefix vscode",
+    "test": "node test-client.mjs"
+  }
+}
