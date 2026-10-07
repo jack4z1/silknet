@@ -4,6 +4,25 @@
   "description": "Connect Browser AI to Local AI",
   "version": "1.0.0",
   "publisher": "silknet",
+  "license": "MIT",
+  "icon": "icons/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jack4z1/silknet.git"
+  },
+  "homepage": "https://github.com/jack4z1/silknet",
+  "bugs": {
+    "url": "https://github.com/jack4z1/silknet/issues"
+  },
+  "keywords": [
+    "ai",
+    "chatgpt",
+    "claude",
+    "gemini",
+    "browser-bridge",
+    "local-ai",
+    "cursor"
+  ],
   "engines": {
     "vscode": "^1.80.0"
   },
