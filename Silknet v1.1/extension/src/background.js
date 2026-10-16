@@ -90,7 +90,11 @@ async function connectBridge() {
         clearInterval(reconnectTimer);
         reconnectTimer = null;
       }
-      await syncAllAiTabs();
+      try {
+        await syncAllAiTabs();
+      } catch (e) {
+        // Ignored during service worker reload/unload
+      }
     };
 
     ws.onmessage = async (event) => {
@@ -151,34 +155,38 @@ async function getActiveAiTabs() {
 }
 
 async function syncAllAiTabs() {
-  if (!ws || ws.readyState !== WebSocket.OPEN || !isEnabled) return;
+  try {
+    if (!ws || ws.readyState !== WebSocket.OPEN || !isEnabled) return;
 
-  const tabs = await chrome.tabs.query({});
-  const aiTabs = [];
+    const tabs = await chrome.tabs.query({});
+    const aiTabs = [];
 
-  for (const tab of tabs) {
-    const provider = getProviderFromUrl(tab.url);
-    if (provider && selectedTabs.includes(provider) && tab.id) {
-      aiTabs.push({
-        id: String(tab.id),
-        provider,
-        title: tab.title,
-        url: tab.url,
-      });
-      safeSend({
-        type: 'HELLO',
-        id: String(tab.id),
-        provider,
-        title: tab.title,
-        url: tab.url,
-      });
+    for (const tab of tabs) {
+      const provider = getProviderFromUrl(tab.url);
+      if (provider && selectedTabs.includes(provider) && tab.id) {
+        aiTabs.push({
+          id: String(tab.id),
+          provider,
+          title: tab.title,
+          url: tab.url,
+        });
+        safeSend({
+          type: 'HELLO',
+          id: String(tab.id),
+          provider,
+          title: tab.title,
+          url: tab.url,
+        });
+      }
     }
-  }
 
-  safeSend({
-    type: 'SYNC_ALL_TABS',
-    tabs: aiTabs,
-  });
+    safeSend({
+      type: 'SYNC_ALL_TABS',
+      tabs: aiTabs,
+    });
+  } catch (err) {
+    // Graceful exit if SW is terminating
+  }
 }
 
 // Single prompt execution
