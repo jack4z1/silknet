@@ -91,9 +91,8 @@ async function handleExecutePrompt(promptText, attachments) {
     throw new Error(`Could not find chat composer on ${PROVIDER}`);
   }
 
-  // Record baseline turns and text before submission
+  // Record baseline turns before submission
   const baselineCount = countAssistantTurns(PROVIDER);
-  const baselineText = extractLatestReply(PROVIDER);
 
   // 2. Inject real file/image attachments if present
   if (attachments && attachments.length > 0) {
@@ -109,7 +108,7 @@ async function handleExecutePrompt(promptText, attachments) {
   await autoSend(composer, PROVIDER);
 
   // 5. Wait for streaming response completion
-  const reply = await waitForResponseCompletion(PROVIDER, baselineCount, baselineText);
+  const reply = await waitForResponseCompletion(PROVIDER, baselineCount);
 
   return {
     success: true,
@@ -310,19 +309,11 @@ async function injectText(el, text, provider) {
   await sleep(300);
 }
 
-async function waitForSendButtonReady(provider, maxWaitMs = 15000) {
+async function waitForSendButtonReady(provider, maxWaitMs = 6000) {
   const start = Date.now();
-  console.log(`[Silknet v1.1] Waiting for send button to be ready and enabled on ${provider}...`);
 
   while (Date.now() - start < maxWaitMs) {
     if (isAborted) throw new Error('Execution aborted by user emergency stop.');
-
-    // Check if any file upload loading spinner / progress is still active
-    const isUploading = Boolean(
-      document.querySelector(
-        '.animate-spin, svg.animate-spin, [data-testid*="uploading" i], [aria-label*="uploading" i], [aria-label*="loading" i], div[class*="loading" i]'
-      )
-    );
 
     const btn = findSendButton(provider);
     if (btn && isVisible(btn)) {
@@ -332,15 +323,13 @@ async function waitForSendButtonReady(provider, maxWaitMs = 15000) {
         btn.hasAttribute('disabled') ||
         btn.classList.contains('disabled');
 
-      if (!isDisabled && !isUploading) {
-        console.log(`[Silknet v1.1] Send button is enabled and ready on ${provider} (waited ${Date.now() - start}ms)`);
+      if (!isDisabled) {
         return btn;
       }
     }
-    await sleep(250);
+    await sleep(200);
   }
 
-  console.warn(`[Silknet v1.1] Send button ready wait timed out on ${provider}, proceeding with best candidate`);
   return findSendButton(provider);
 }
 
@@ -348,13 +337,15 @@ async function autoSend(composerEl, provider) {
   console.log(`[Silknet v1.1] Triggering Auto-Send on ${provider}...`);
   const view = composerEl.ownerDocument.defaultView || window;
 
-  // 1. Wait until send button is enabled (and file uploads complete)
-  const sendBtn = await waitForSendButtonReady(provider, 15000);
+  // 1. Wait until send button is enabled (allows file attachments to finish uploading)
+  const sendBtn = await waitForSendButtonReady(provider, 6000);
 
   // 2. Click the send button with complete pointer/mouse sequence
   let clicked = false;
   if (sendBtn) {
     try {
+      sendBtn.removeAttribute('disabled');
+      sendBtn.disabled = false;
       sendBtn.focus();
       sendBtn.dispatchEvent(new view.PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
       sendBtn.dispatchEvent(new view.MouseEvent('mousedown', { bubbles: true, cancelable: true }));
@@ -368,14 +359,14 @@ async function autoSend(composerEl, provider) {
     }
   }
 
-  await sleep(600);
+  await sleep(400);
 
   // 3. Fallback: If still has text in composer and generation hasn't started, dispatch Enter key
   const stillHasText = (composerEl.value || composerEl.textContent || '').trim().length > 0;
   const stopPresent = isStopButtonPresent(provider);
 
-  if (!stopPresent && stillHasText) {
-    console.log(`[Silknet v1.1] Input text remains after click, triggering Enter key fallback on ${provider}...`);
+  if (!stopPresent && (!clicked || stillHasText)) {
+    console.log(`[Silknet v1.1] Triggering Enter key fallback on ${provider}...`);
     composerEl.focus();
 
     const enterOpts = {
@@ -394,16 +385,6 @@ async function autoSend(composerEl, provider) {
     composerEl.dispatchEvent(new view.KeyboardEvent('keydown', enterOpts));
     composerEl.dispatchEvent(new view.KeyboardEvent('keypress', enterOpts));
     composerEl.dispatchEvent(new view.KeyboardEvent('keyup', enterOpts));
-
-    await sleep(600);
-
-    // If still not sent, retry clicking send button again
-    const retryBtn = findSendButton(provider);
-    if (retryBtn && !retryBtn.disabled && retryBtn.getAttribute('aria-disabled') !== 'true') {
-      try {
-        retryBtn.click();
-      } catch {}
-    }
   }
 }
 
@@ -462,23 +443,24 @@ function countAssistantTurns(provider) {
   return 0;
 }
 
-async function waitForResponseCompletion(provider, baselineCount, baselineText = '', maxTimeoutMs = 180000) {
+async function waitForResponseCompletion(provider, baselineCount, maxTimeoutMs = 180000) {
   console.log(`[Silknet v1.1] Waiting for completion on ${provider} (baseline turns: ${baselineCount})...`);
   const start = Date.now();
 
+  // 1. Wait for generation to start
   let started = false;
   while (Date.now() - start < 15000) {
     if (isAborted) {
       throw new Error('Execution aborted by user emergency stop.');
     }
-    const curReply = extractLatestReply(provider);
-    if (isStopButtonPresent(provider) || countAssistantTurns(provider) > baselineCount || (curReply.length > 0 && curReply !== baselineText)) {
+    if (isStopButtonPresent(provider) || countAssistantTurns(provider) > baselineCount) {
       started = true;
       break;
     }
     await sleep(250);
   }
 
+  // 2. Wait for generation to complete (stop button disappears and text is stable)
   let lastText = '';
   let stableTicks = 0;
 
@@ -493,7 +475,7 @@ async function waitForResponseCompletion(provider, baselineCount, baselineText =
       stableTicks = 0;
       lastText = currentReply;
     } else {
-      if (currentReply.length > 0 && currentReply !== baselineText && currentReply === lastText) {
+      if (currentReply.length > 0 && currentReply === lastText) {
         stableTicks++;
         if (stableTicks >= 3) { // 3 consecutive ticks of stability (~1.2s)
           console.log(`[Silknet v1.1] AI generation complete and verified stable on ${provider}.`);
@@ -516,14 +498,16 @@ function isStopButtonPresent(provider) {
   if (provider === 'chatgpt') {
     selectors = [
       'button[data-testid="stop-button"]',
-      'button[aria-label*="Stop" i]',
-      'button[data-testid*="stop" i]'
+      'button[aria-label="Stop generating"]',
+      'button[aria-label="Stop streaming"]',
+      'button[aria-label*="Stop" i]'
     ];
   } else if (provider === 'claude') {
     selectors = [
+      'button[aria-label="Stop Response"]',
       'button[aria-label*="Stop" i]',
-      'button[data-testid*="stop" i]',
-      'button:has(svg rect)'
+      'button[data-testid="stop-button"]',
+      'button[data-testid*="stop"]'
     ];
   } else if (provider === 'gemini') {
     selectors = [
