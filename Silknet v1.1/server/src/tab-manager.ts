@@ -70,17 +70,21 @@ export class TabManager {
 
   public registerTab(ws: WebSocket, data: { id: string; provider: string; title?: string; url?: string }): TabConnection {
     const provider = this.normalizeProvider(data.provider);
+    const existing = this.tabs.get(data.id);
+    if (!existing || existing.provider !== provider) {
+      console.log(`[TabManager] 🟢 Tab registered: ${provider.toUpperCase()} (${data.id})`);
+    }
+
     const tab: TabConnection = {
       id: data.id,
       provider,
       title: data.title,
       url: data.url,
       ws,
-      connectedAt: Date.now(),
+      connectedAt: existing?.connectedAt || Date.now(),
     };
 
     this.tabs.set(data.id, tab);
-    console.log(`[TabManager] 🟢 Tab registered: ${provider.toUpperCase()} (${data.id})`);
     return tab;
   }
 
@@ -97,20 +101,9 @@ export class TabManager {
     if (tab) {
       console.log(`[TabManager] 🔴 Tab disconnected: ${tab.provider.toUpperCase()} (${id})`);
       this.tabs.delete(id);
-
-      for (const [reqId, req] of this.pendingRequests.entries()) {
-        if (req.provider === tab.provider) {
-          clearTimeout(req.timer);
-          this.pendingRequests.delete(reqId);
-          req.resolve({
-            provider: tab.provider,
-            success: false,
-            reply: '',
-            error: `Tab ${tab.provider} closed while awaiting response`,
-            durationMs: Date.now() - req.startTime,
-          });
-        }
-      }
+      // NOTE: Do NOT cancel in-flight requests here! 
+      // The browser tab content script may still be processing and will send its result.
+      // Pending requests are only cancelled if they reach the 180s timeout or user triggers killswitch.
     }
   }
 

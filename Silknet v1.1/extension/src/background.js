@@ -128,14 +128,19 @@ async function ensureConnectedThenSend(data) {
     return;
   }
 
-  // Try to reconnect first
+  // Queue in persistent storage so it survives service worker restarts
+  try {
+    const stored = await chrome.storage.local.get({ pendingQueue: [] });
+    stored.pendingQueue.push(data);
+    await chrome.storage.local.set({ pendingQueue: stored.pendingQueue });
+    console.log(`[Silknet v1.1 Worker] 💾 Queued result in storage (${data.provider})`);
+  } catch {}
+
+  // Try to reconnect
   try {
     await connectBridge();
-    // Wait a moment for the connection to establish
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    safeSend(data);
   } catch {
-    console.warn('[Silknet v1.1 Worker] Could not reconnect to forward result');
+    console.warn('[Silknet v1.1 Worker] Could not reconnect immediately to forward result');
   }
 }
 
@@ -165,6 +170,21 @@ async function connectBridge() {
         clearInterval(reconnectTimer);
         reconnectTimer = null;
       }
+
+      // Flush any queued results from storage
+      try {
+        const stored = await chrome.storage.local.get({ pendingQueue: [] });
+        if (stored.pendingQueue && stored.pendingQueue.length > 0) {
+          console.log(`[Silknet v1.1 Worker] 🚀 Flushing ${stored.pendingQueue.length} queued result(s) to server`);
+          for (const item of stored.pendingQueue) {
+            safeSend(item);
+          }
+          await chrome.storage.local.set({ pendingQueue: [] });
+        }
+      } catch (err) {
+        console.warn('[Silknet v1.1 Worker] Error flushing result queue:', err);
+      }
+
       try {
         await syncAllAiTabs();
       } catch (e) {
@@ -286,36 +306,33 @@ async function handleExecuteRequest(msg) {
 
     console.log(`[Silknet v1.1 Worker] Dispatching prompt to Tab ${tab.id} (${provider})...`);
 
-    // Send to content script — the content script will ALSO send the result
-    // independently via chrome.runtime.sendMessage as a backup
-    const result = await chrome.tabs.sendMessage(tab.id, {
+    // Dispatch to content script without blocking for completion.
+    // The content script acknowledges immediately and delivers the real result
+    // via chrome.runtime.sendMessage ('PROMPT_RESULT_FROM_CONTENT').
+    chrome.tabs.sendMessage(tab.id, {
       type: 'EXECUTE_PROMPT',
       id,
       prompt,
       attachments: attachments || [],
+    }).catch((err) => {
+      console.warn(`[Silknet v1.1 Worker] Could not dispatch prompt to tab ${tab.id}:`, err);
+      if (!forwardedResults.has(id)) {
+        forwardedResults.add(id);
+        setTimeout(() => forwardedResults.delete(id), 300000);
+        safeSend({
+          type: 'PROMPT_RESULT',
+          id,
+          provider,
+          success: false,
+          reply: '',
+          error: `Could not send prompt to ${provider} tab: ${err.message}`,
+        });
+      }
     });
-
-    // If we get here, the sendResponse channel worked (service worker survived)
-    // Forward the result if not already forwarded by the backup path
-    if (!forwardedResults.has(id)) {
-      forwardedResults.add(id);
-      setTimeout(() => forwardedResults.delete(id), 300000);
-
-      safeSend({
-        type: 'PROMPT_RESULT',
-        id,
-        provider: result?.provider || provider,
-        success: result?.success ?? false,
-        reply: result?.reply || '',
-        error: result?.error,
-      });
-    }
   } catch (err) {
-    // Only send error if the backup path hasn't already forwarded a success
     if (!forwardedResults.has(id)) {
       forwardedResults.add(id);
       setTimeout(() => forwardedResults.delete(id), 300000);
-
       safeSend({
         type: 'PROMPT_RESULT',
         id,
@@ -325,7 +342,6 @@ async function handleExecuteRequest(msg) {
         error: err instanceof Error ? err.message : String(err),
       });
     }
-  } finally {
     stopKeepAlive();
   }
 }
@@ -439,23 +455,30 @@ function getProviderFromUrl(url) {
   return null;
 }
 
-// Watch for tab updates
+// Watch for tab updates — only notify server if tab URL actually changed
+const knownTabUrls = new Map();
+
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status === 'complete' && tab.url) {
     const provider = getProviderFromUrl(tab.url);
     if (provider && selectedTabs.includes(provider)) {
-      safeSend({
-        type: 'HELLO',
-        id: String(tabId),
-        provider,
-        title: tab.title,
-        url: tab.url,
-      });
+      const prev = knownTabUrls.get(tabId);
+      if (prev !== tab.url) {
+        knownTabUrls.set(tabId, tab.url);
+        safeSend({
+          type: 'HELLO',
+          id: String(tabId),
+          provider,
+          title: tab.title,
+          url: tab.url,
+        });
+      }
     }
   }
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
+  knownTabUrls.delete(tabId);
   safeSend({ type: 'TAB_CLOSED', id: String(tabId) });
   setTimeout(syncAllAiTabs, 200);
 });

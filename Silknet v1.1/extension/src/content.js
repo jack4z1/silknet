@@ -46,6 +46,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     isAborted = false;
     const requestId = message.id; // Track the request ID from the server
 
+    // Acknowledge receipt immediately to avoid Chrome MV3 30-second channel timeout
+    sendResponse({ status: 'started' });
+
     handleExecutePrompt(message.prompt, message.attachments || [])
       .then((result) => {
         const payload = {
@@ -56,14 +59,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           reply: result.reply || '',
         };
 
-        // PRIMARY: Send result independently to the background service worker.
-        // This works even if the service worker was restarted during our operation.
-        chrome.runtime.sendMessage(payload).catch(() => {
-          console.warn('[Silknet v1.1] Independent sendMessage failed (service worker may be restarting)');
+        // Deliver result independently to background worker
+        chrome.runtime.sendMessage(payload).catch((err) => {
+          console.warn('[Silknet v1.1] Failed to send prompt result to background:', err);
         });
-
-        // SECONDARY: Also try the original sendResponse channel (works if SW survived)
-        try { sendResponse(result); } catch {}
       })
       .catch((err) => {
         const errorPayload = {
@@ -76,16 +75,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         };
 
         chrome.runtime.sendMessage(errorPayload).catch(() => {});
-        try {
-          sendResponse({
-            success: false,
-            error: err instanceof Error ? err.message : String(err),
-            reply: '',
-            provider: PROVIDER,
-          });
-        } catch {}
       });
-    return true; // Keep channel open for async response
+
+    return false; // Return false so port closes cleanly right away
   }
 });
 
@@ -560,7 +552,10 @@ function isStopButtonPresent(provider) {
 function extractLatestReply(provider) {
   let elements = [];
   if (provider === 'chatgpt') {
-    elements = Array.from(document.querySelectorAll('div[data-message-author-role="assistant"], article'));
+    elements = Array.from(document.querySelectorAll('div[data-message-author-role="assistant"]'));
+    if (elements.length === 0) {
+      elements = Array.from(document.querySelectorAll('article'));
+    }
   } else if (provider === 'claude') {
     elements = Array.from(
       document.querySelectorAll(
@@ -575,7 +570,7 @@ function extractLatestReply(provider) {
   const last = elements[elements.length - 1];
 
   const clone = last.cloneNode(true);
-  const buttons = clone.querySelectorAll('button, svg, [role="button"], .copy-button');
+  const buttons = clone.querySelectorAll('.copy-button, button[aria-label*="Copy" i], button[title*="Copy" i], svg');
   buttons.forEach((b) => b.remove());
 
   return (clone.textContent || '').trim();
