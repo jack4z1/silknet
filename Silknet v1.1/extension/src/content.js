@@ -114,8 +114,9 @@ async function handleExecutePrompt(promptText, attachments) {
     throw new Error(`Could not find chat composer on ${PROVIDER}`);
   }
 
-  // Record baseline turns before submission
+  // Record baseline turns and baseline reply text before submission
   const baselineCount = countAssistantTurns(PROVIDER);
+  const baselineReply = extractLatestReply(PROVIDER);
 
   // 2. Inject real file/image attachments if present
   if (attachments && attachments.length > 0) {
@@ -131,7 +132,7 @@ async function handleExecutePrompt(promptText, attachments) {
   await autoSend(composer, PROVIDER, Boolean(attachments && attachments.length > 0));
 
   // 5. Wait for streaming response completion
-  const reply = await waitForResponseCompletion(PROVIDER, baselineCount);
+  const reply = await waitForResponseCompletion(PROVIDER, baselineCount, baselineReply);
 
   return {
     success: true,
@@ -424,7 +425,7 @@ async function autoSend(composerEl, provider, hasAttachments = false) {
       return;
     }
 
-    // 3. Fallback: Dispatch Enter key on composer
+    // 3. Fallback: Dispatch Enter key on composer and form submit
     composerEl.focus();
     const enterOpts = {
       key: 'Enter',
@@ -443,10 +444,20 @@ async function autoSend(composerEl, provider, hasAttachments = false) {
     composerEl.dispatchEvent(new view.KeyboardEvent('keypress', enterOpts));
     composerEl.dispatchEvent(new view.KeyboardEvent('keyup', enterOpts));
 
+    const form = composerEl.closest('form');
+    if (form) {
+      try {
+        form.dispatchEvent(new view.KeyboardEvent('keydown', enterOpts));
+        if (typeof form.requestSubmit === 'function') {
+          form.requestSubmit(currentBtn || undefined);
+        }
+      } catch {}
+    }
+
     await sleep(600);
 
     if (isStopButtonPresent(provider)) {
-      console.log(`[Silknet v1.1] Generation confirmed started via Enter key on ${provider}`);
+      console.log(`[Silknet v1.1] Generation confirmed started via Enter/Submit on ${provider}`);
       return;
     }
   }
@@ -457,16 +468,15 @@ function findSendButton(provider) {
   if (provider === 'chatgpt') {
     selectors = [
       'button[data-testid="send-button"]',
-      'button[data-testid="fruitjuice-send-button"]',
       'button[data-testid="composer-send-button"]',
+      'button[data-testid="fruitjuice-send-button"]',
+      'form button[data-testid="send-button"]',
+      '#composer-background button[data-testid="send-button"]',
+      '#composer-background button[data-testid="composer-send-button"]',
       'button[aria-label="Send prompt"]',
       'button[aria-label="Send message"]',
-      'button[aria-label*="Send" i]',
-      'button[aria-label*="send" i]',
-      '#composer-background button[data-testid="send-button"]',
-      '#composer-background button:has(svg)',
-      'form button[data-testid="send-button"]',
-      'form button:last-of-type'
+      'form button[type="submit"]',
+      'button[aria-label*="Send" i]'
     ];
   } else if (provider === 'claude') {
     selectors = [
@@ -486,15 +496,48 @@ function findSendButton(provider) {
   for (const s of selectors) {
     try {
       const el = document.querySelector(s);
-      if (el && isVisible(el)) return el;
+      if (el && isVisible(el)) {
+        if (provider === 'chatgpt') {
+          const label = (el.getAttribute('aria-label') || '').toLowerCase();
+          const testid = (el.getAttribute('data-testid') || '').toLowerCase();
+          if (label.includes('voice') || label.includes('mic') || label.includes('speech') ||
+              testid.includes('voice') || testid.includes('mic') || testid.includes('speech')) {
+            continue;
+          }
+        }
+        return el;
+      }
     } catch {}
   }
   return null;
 }
 
+function getChatGPTAssistantElements() {
+  // Tier 1: Target explicit assistant role or markdown elements
+  const tier1 = Array.from(document.querySelectorAll('[data-message-author-role="assistant"] [class*="markdown"], [data-message-author-role="assistant"] .prose, [data-markdown-text-style="assistant-message"], [class*="agent-turn"] [class*="markdown"], [data-message-author-role="assistant"]'));
+  if (tier1.length > 0) return tier1;
+
+  // Tier 2: Agent turn or assistant conversation turns
+  const tier2 = Array.from(document.querySelectorAll('[class*="agent-turn"], div:has(> h4[data-conversation-role="assistant"])'));
+  if (tier2.length > 0) return tier2;
+
+  // Tier 3: Turn containers that do not belong to the user
+  const turns = Array.from(document.querySelectorAll('[data-testid^="conversation-turn-"], article'));
+  const nonUser = turns.filter((t) => {
+    return !t.querySelector('[data-message-author-role="user"]') && t.getAttribute('data-message-author-role') !== 'user';
+  });
+  if (nonUser.length > 0) return nonUser;
+
+  // Tier 4: Any markdown or prose inside main
+  const tier4 = Array.from(document.querySelectorAll('main [class*="markdown"], main .prose'));
+  if (tier4.length > 0) return tier4;
+
+  return [];
+}
+
 function countAssistantTurns(provider) {
   if (provider === 'chatgpt') {
-    return document.querySelectorAll('[data-message-author-role="assistant"], article .markdown, div.agent-turn').length;
+    return getChatGPTAssistantElements().length;
   }
   if (provider === 'claude') {
     return document.querySelectorAll(
@@ -507,25 +550,11 @@ function countAssistantTurns(provider) {
   return 0;
 }
 
-async function waitForResponseCompletion(provider, baselineCount, maxTimeoutMs = 180000) {
-  console.log(`[Silknet v1.1] Waiting for completion on ${provider} (baseline turns: ${baselineCount})...`);
+async function waitForResponseCompletion(provider, baselineCount, baselineReply = '', maxTimeoutMs = 180000) {
+  console.log(`[Silknet v1.1] Waiting for completion on ${provider} (baseline turns: ${baselineCount}, baseline length: ${baselineReply.length})...`);
   const start = Date.now();
 
-  // 1. Wait for generation to start
   let started = false;
-  while (Date.now() - start < 15000) {
-    if (isAborted) {
-      throw new Error('Execution aborted by user emergency stop.');
-    }
-    if (isStopButtonPresent(provider) || countAssistantTurns(provider) > baselineCount) {
-      started = true;
-      console.log(`[Silknet v1.1] Generation confirmed started on ${provider}`);
-      break;
-    }
-    await sleep(250);
-  }
-
-  // 2. Wait for generation to complete (stop button disappears, send button returns, or text stabilizes)
   let lastText = '';
   let stableTicks = 0;
 
@@ -536,12 +565,21 @@ async function waitForResponseCompletion(provider, baselineCount, maxTimeoutMs =
 
     const stopPresent = isStopButtonPresent(provider);
     const sendBtn = findSendButton(provider);
-    const sendBtnReady = sendBtn && isVisible(sendBtn);
+    const sendBtnReady = sendBtn && isVisible(sendBtn) && !sendBtn.disabled && sendBtn.getAttribute('aria-disabled') !== 'true';
     const currentReply = extractLatestReply(provider);
+    const currentTurns = countAssistantTurns(provider);
 
-    // If the Send button has reappeared in the composer, streaming has ended
-    const isStreaming = stopPresent && !sendBtnReady;
+    // If turn count increased, or stop button appeared, or new text is present, generation is confirmed started
+    if (!started) {
+      const isNewText = currentReply.length > 0 && currentReply !== baselineReply;
+      const isNewTurn = currentTurns > baselineCount;
+      if (stopPresent || isNewTurn || isNewText) {
+        started = true;
+        console.log(`[Silknet v1.1] Generation confirmed started on ${provider} (turns: ${currentTurns}, stopPresent: ${stopPresent}, text length: ${currentReply.length})`);
+      }
+    }
 
+    // Track stability of extracted text
     if (currentReply.length > 0) {
       if (currentReply === lastText) {
         stableTicks++;
@@ -551,27 +589,27 @@ async function waitForResponseCompletion(provider, baselineCount, maxTimeoutMs =
       }
     }
 
-    if (isStreaming) {
-      started = true;
-      // While streaming, text is arriving. If text has NOT changed for 8 consecutive ticks (~3.2s),
-      // it means streaming has finished even if the stop button was not cleanly unmounted
-      if (currentReply.length > 0 && stableTicks >= 8) {
-        console.log(`[Silknet v1.1] AI generation complete on ${provider} (stream stabilized, ${currentReply.length} chars).`);
-        return currentReply;
-      }
-    } else {
-      // Not streaming: stop button is absent OR send button has returned
-      if (currentReply.length > 0) {
-        if (stableTicks >= 2) { // 2 consecutive ticks (~800ms) of stable text after streaming finishes
+    const isStreaming = stopPresent && !sendBtnReady;
+
+    if (started) {
+      if (isStreaming) {
+        // While streaming: if text hasn't changed for 8 ticks (~3.2s), streaming has finished
+        if (currentReply.length > 0 && currentReply !== baselineReply && stableTicks >= 8) {
+          console.log(`[Silknet v1.1] AI generation complete on ${provider} (stream stabilized, ${currentReply.length} chars).`);
+          return currentReply;
+        }
+      } else {
+        // Generation stopped: stop button absent OR send button has returned
+        if (currentReply.length > 0 && currentReply !== baselineReply && stableTicks >= 2) {
           console.log(`[Silknet v1.1] AI generation complete and verified stable on ${provider} (${currentReply.length} chars).`);
           return currentReply;
         }
-      } else if (started) {
-        const fallbackText = extractBroadFallback(provider);
-        if (fallbackText.length > 0) {
-          console.log(`[Silknet v1.1] AI generation captured via broad fallback on ${provider} (${fallbackText.length} chars).`);
-          return fallbackText;
-        }
+      }
+    } else {
+      // Even if started was never set, if we see non-empty text that is different from baseline and stable for 3 ticks without stop button, return it
+      if (currentReply.length > 0 && currentReply !== baselineReply && stableTicks >= 3 && !stopPresent) {
+        console.log(`[Silknet v1.1] AI generation captured (stable reply: ${currentReply.length} chars) on ${provider}.`);
+        return currentReply;
       }
     }
 
@@ -584,12 +622,14 @@ async function waitForResponseCompletion(provider, baselineCount, maxTimeoutMs =
 
 function isStopButtonPresent(provider) {
   if (provider === 'chatgpt') {
-    // If the Send button has returned, ChatGPT is definitely not generating
-    const sendBtn = document.querySelector('button[data-testid="send-button"], button[data-testid="fruitjuice-send-button"], button[data-testid="composer-send-button"]');
+    const sendBtn = findSendButton(provider);
     if (sendBtn && isVisible(sendBtn)) {
-      return false;
+      const isSendDisabled = sendBtn.disabled || sendBtn.getAttribute('aria-disabled') === 'true' || sendBtn.classList.contains('disabled');
+      if (!isSendDisabled) {
+        return false;
+      }
     }
-    const stopBtn = document.querySelector('button[data-testid="stop-button"], button[aria-label="Stop generating"], button[aria-label="Stop streaming"]');
+    const stopBtn = document.querySelector('button[data-testid="stop-button"], button[aria-label="Stop generating"], button[aria-label="Stop streaming"], button[aria-label*="Stop" i]');
     if (stopBtn && isVisible(stopBtn)) {
       return true;
     }
@@ -626,16 +666,8 @@ function isStopButtonPresent(provider) {
 function extractLatestReply(provider) {
   let elements = [];
   if (provider === 'chatgpt') {
-    // Primary: assistant markdown container (cleanest, direct reply text)
-    elements = Array.from(document.querySelectorAll('[data-message-author-role="assistant"] .markdown, article .markdown, div.agent-turn .markdown, div.markdown'));
-    if (elements.length === 0) {
-      elements = Array.from(document.querySelectorAll('div[data-message-author-role="assistant"], div.agent-turn'));
-    }
-    if (elements.length === 0) {
-      elements = Array.from(document.querySelectorAll('article'));
-    }
+    elements = getChatGPTAssistantElements();
   } else if (provider === 'claude') {
-    // In modern Claude, .standard-markdown directly contains the clean response text
     elements = Array.from(document.querySelectorAll('.standard-markdown'));
     if (elements.length === 0) {
       elements = Array.from(
@@ -651,8 +683,12 @@ function extractLatestReply(provider) {
   if (elements.length === 0) return '';
   const last = elements[elements.length - 1];
 
-  const clone = last.cloneNode(true);
-  const buttons = clone.querySelectorAll('.copy-button, button, svg');
+  // If last contains an inner markdown or prose container, read from that container
+  const innerMd = last.querySelector ? last.querySelector('[class*="markdown"], .prose') : null;
+  const target = innerMd || last;
+
+  const clone = target.cloneNode(true);
+  const buttons = clone.querySelectorAll('.copy-button, button, svg, [aria-label*="Copy" i]');
   buttons.forEach((b) => b.remove());
 
   return (clone.textContent || '').trim();
@@ -666,7 +702,7 @@ function extractBroadFallback(provider) {
         return (msgs[msgs.length - 1].textContent || '').trim();
       }
     } else if (provider === 'chatgpt') {
-      const msgs = document.querySelectorAll('main .markdown, main div[data-message-author-role="assistant"], main p');
+      const msgs = document.querySelectorAll('main [class*="markdown"], main div[data-message-author-role="assistant"], main [data-testid^="conversation-turn-"]:not(:has([data-message-author-role="user"])) [class*="prose"]');
       if (msgs.length > 0) {
         return (msgs[msgs.length - 1].textContent || '').trim();
       }
