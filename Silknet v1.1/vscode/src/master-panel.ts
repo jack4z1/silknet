@@ -1,4 +1,30 @@
 import * as vscode from 'vscode';
+import * as http from 'http';
+
+function httpGetJson(urlStr: string): Promise<any> {
+  return new Promise((resolve) => {
+    const req = http.get(urlStr, (res) => {
+      if (res.statusCode !== 200) {
+        res.resume();
+        return resolve(null);
+      }
+      let data = '';
+      res.on('data', (chunk) => (data += chunk));
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(data));
+        } catch {
+          resolve(null);
+        }
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.setTimeout(2500, () => {
+      req.destroy();
+      resolve(null);
+    });
+  });
+}
 
 export class MasterPanelProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'tabBridge.masterView';
@@ -24,6 +50,13 @@ export class MasterPanelProvider implements vscode.WebviewViewProvider {
       switch (data.type) {
         case 'CHECK_STATUS': {
           await this.syncStatus();
+          break;
+        }
+        case 'VOICE_DICTATION_CLICKED': {
+          vscode.window.showInformationMessage(
+            '🎤 Voice Prompting: Press [Win + H] on your keyboard to speak directly into the prompt box!',
+            'Got it'
+          );
           break;
         }
         case 'GRAB_SELECTION': {
@@ -105,25 +138,15 @@ export class MasterPanelProvider implements vscode.WebviewViewProvider {
   public async syncStatus() {
     if (!this._view) return;
     try {
-      const [resHealth, resApprovals] = await Promise.all([
-        fetch(`${this._serverBase}/health`).catch(() => null),
-        fetch(`${this._serverBase}/api/approvals`).catch(() => null),
+      const [status, approvalsData] = await Promise.all([
+        httpGetJson(`${this._serverBase}/health`),
+        httpGetJson(`${this._serverBase}/api/approvals`),
       ]);
-
-      let status = null;
-      let approvalsData: any = { requireApproval: true, pendingApprovals: [] };
-
-      if (resHealth && resHealth.ok) {
-        status = await resHealth.json();
-      }
-      if (resApprovals && resApprovals.ok) {
-        approvalsData = await resApprovals.json();
-      }
 
       this._view.webview.postMessage({
         type: 'STATUS_UPDATE',
         status,
-        approvals: approvalsData,
+        approvals: approvalsData || { requireApproval: true, pendingApprovals: [] },
       });
     } catch {
       this._view.webview.postMessage({ type: 'STATUS_UPDATE', status: null, approvals: null });
@@ -264,6 +287,7 @@ export class MasterPanelProvider implements vscode.WebviewViewProvider {
       border-radius: 12px;
       background: var(--vscode-badge-background);
       color: var(--vscode-badge-foreground);
+      transition: background 0.2s;
     }
     .badge.online { background: #1b5e20; color: #a5d6a7; }
     .badge.offline { background: #b71c1c; color: #ffcdd2; }
@@ -376,7 +400,7 @@ export class MasterPanelProvider implements vscode.WebviewViewProvider {
     /* Voice Prompt Button styling */
     .task-container {
       position: relative;
-      margin-bottom: 10px;
+      margin-bottom: 6px;
     }
     .task-container textarea {
       margin-bottom: 0;
@@ -399,12 +423,25 @@ export class MasterPanelProvider implements vscode.WebviewViewProvider {
       transition: all 0.2s;
     }
     .mic-btn:hover { opacity: 1; background: rgba(255,255,255,0.1); }
-    .mic-btn.recording {
+    .mic-btn.active {
       color: #ef4444;
       opacity: 1;
       animation: pulse 1s infinite alternate;
     }
-    @keyframes pulse { from { transform: scale(1); } to { transform: scale(1.15); } }
+    @keyframes pulse { from { transform: scale(1); } to { transform: scale(1.2); } }
+
+    .voice-hint-banner {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      background: rgba(99, 102, 241, 0.15);
+      border: 1px solid rgba(99, 102, 241, 0.4);
+      color: #a5b4fc;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 10px;
+      margin-bottom: 8px;
+    }
 
     /* Attachment Dropzone styling */
     .attachment-zone {
@@ -667,11 +704,11 @@ export class MasterPanelProvider implements vscode.WebviewViewProvider {
     <!-- 1. What needs solving + Voice Button -->
     <div class="field-label">
       <span>1. What needs solving / guidance?</span>
-      <span style="font-size: 9px; opacity: 0.7;">Click mic to speak</span>
+      <span style="font-size: 9px; opacity: 0.8; color: #a5b4fc;">Press Win + H to speak</span>
     </div>
     <div class="task-container">
-      <textarea id="task-input" rows="3" placeholder="e.g. say hello, or ask a coding question... (or click 🎤 to speak)"></textarea>
-      <button type="button" class="mic-btn" id="mic-btn" title="Click to speak (Voice Prompt)">
+      <textarea id="task-input" rows="3" placeholder="e.g. ask a coding question... (or click 🎤 to speak)"></textarea>
+      <button type="button" class="mic-btn" id="mic-btn" title="Click to speak (Press Win + H anytime)">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
           <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
@@ -679,6 +716,11 @@ export class MasterPanelProvider implements vscode.WebviewViewProvider {
           <line x1="8" y1="23" x2="16" y2="23"/>
         </svg>
       </button>
+    </div>
+
+    <!-- Voice Banner Tip -->
+    <div id="voice-banner" class="voice-hint-banner">
+      <span>🎙️ Voice Prompting Ready: Press <strong>Windows Key + H</strong> to speak!</span>
     </div>
 
     <!-- 1.1 Native File / Image Attachment Dropzone (Max 5 files, 20MB, No 3D/Video/Audio) -->
@@ -730,6 +772,7 @@ export class MasterPanelProvider implements vscode.WebviewViewProvider {
 
     const taskInput = document.getElementById('task-input');
     const micBtn = document.getElementById('mic-btn');
+    const voiceBanner = document.getElementById('voice-banner');
     const dropzone = document.getElementById('dropzone');
     const fileInput = document.getElementById('file-input');
     const attachmentChips = document.getElementById('attachment-chips');
@@ -762,47 +805,12 @@ export class MasterPanelProvider implements vscode.WebviewViewProvider {
     const MAX_SIZE_BYTES = 20 * 1024 * 1024; // 20 MB
     const FORBIDDEN_EXTS = ['.obj','.gltf','.glb','.stl','.blend','.fbx','.3ds','.mp4','.mov','.avi','.mkv','.webm','.mp3','.wav','.aac','.flac','.ogg','.m4a'];
 
-    // Speech Recognition Setup
-    let recognition = null;
-    let isRecording = false;
-
-    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      recognition = new SpeechRecognition();
-      recognition.continuous = false;
-      recognition.interimResults = false;
-
-      recognition.onstart = () => {
-        isRecording = true;
-        micBtn.classList.add('recording');
-      };
-      recognition.onresult = (event) => {
-        const transcript = event.results[0][0].transcript;
-        if (transcript) {
-          const prev = taskInput.value;
-          taskInput.value = prev ? (prev + ' ' + transcript) : transcript;
-        }
-      };
-      recognition.onerror = () => {
-        isRecording = false;
-        micBtn.classList.remove('recording');
-      };
-      recognition.onend = () => {
-        isRecording = false;
-        micBtn.classList.remove('recording');
-      };
-    }
-
+    // Microphone / Voice Prompting
     micBtn.addEventListener('click', () => {
-      if (!recognition) {
-        alert('Speech recognition is not supported in this environment.');
-        return;
-      }
-      if (isRecording) {
-        recognition.stop();
-      } else {
-        recognition.start();
-      }
+      taskInput.focus();
+      micBtn.classList.toggle('active');
+      voiceBanner.style.display = micBtn.classList.contains('active') ? 'flex' : 'none';
+      vscode.postMessage({ type: 'VOICE_DICTATION_CLICKED' });
     });
 
     // File Attachments Handling
@@ -819,21 +827,21 @@ export class MasterPanelProvider implements vscode.WebviewViewProvider {
 
     async function processFile(file) {
       if (attachedFiles.length >= MAX_FILES) {
-        alert(\`Maximum \${MAX_FILES} files can be attached.\`);
+        alert('Maximum ' + MAX_FILES + ' files can be attached.');
         return;
       }
 
       const lower = file.name.toLowerCase();
       for (const ext of FORBIDDEN_EXTS) {
         if (lower.endsWith(ext)) {
-          alert(\`File "\${file.name}" rejected: 3D, video, and audio files cannot be attached.\`);
+          alert('File "' + file.name + '" rejected: 3D, video, and audio files cannot be attached.');
           return;
         }
       }
 
       const currentTotal = attachedFiles.reduce((acc, f) => acc + f.size, 0);
       if (currentTotal + file.size > MAX_SIZE_BYTES) {
-        alert(\`Total attachment size exceeds 20 MB limit.\`);
+        alert('Total attachment size exceeds 20 MB limit.');
         return;
       }
 
@@ -861,7 +869,7 @@ export class MasterPanelProvider implements vscode.WebviewViewProvider {
         const chip = document.createElement('div');
         chip.className = 'file-chip';
         const kb = (f.size / 1024).toFixed(1);
-        chip.innerHTML = \`<span>\${escapeHtml(f.name)} (\${kb} KB)</span><span class="remove-btn" data-idx="\${idx}">×</span>\`;
+        chip.innerHTML = '<span>' + escapeHtml(f.name) + ' (' + kb + ' KB)</span><span class="remove-btn" data-idx="' + idx + '">×</span>';
         attachmentChips.appendChild(chip);
       });
 
@@ -930,10 +938,10 @@ export class MasterPanelProvider implements vscode.WebviewViewProvider {
       if (providerSelect.value === 'consensus') {
         let fullPrompt = task;
         if (codeInput.value.trim()) {
-          fullPrompt += \`\\n\\nCODE CONTEXT:\\n\`\`\`\${currentLanguage}\\n\${codeInput.value.trim()}\\n\`\`\`\`;
+          fullPrompt += '\\n\\nCODE CONTEXT:\\n\`\`\`' + currentLanguage + '\\n' + codeInput.value.trim() + '\\n\`\`\`';
         }
         if (errorInput.value.trim()) {
-          fullPrompt += \`\\n\\nERROR / OBSTACLE:\\n\`\`\`\\n\${errorInput.value.trim()}\\n\`\`\`\`;
+          fullPrompt += '\\n\\nERROR / OBSTACLE:\\n\`\`\`\\n' + errorInput.value.trim() + '\\n\`\`\`';
         }
 
         vscode.postMessage({
@@ -1022,7 +1030,7 @@ export class MasterPanelProvider implements vscode.WebviewViewProvider {
         statusPill.textContent = 'No AI Tabs Detected';
       } else {
         statusPill.className = 'badge online';
-        statusPill.textContent = \`🟢 \${providers.map(p => p.toUpperCase()).join(', ')}\`;
+        statusPill.textContent = '🟢 ' + providers.map(p => p.toUpperCase()).join(', ');
       }
 
       if (approvals) {
@@ -1031,7 +1039,7 @@ export class MasterPanelProvider implements vscode.WebviewViewProvider {
         if (pending.length > 0) {
           const first = pending[0];
           currentApprovalId = first.id;
-          approvalDesc.textContent = \`[\${first.provider.toUpperCase()}] \${first.caller}: \${first.task}\`;
+          approvalDesc.textContent = '[' + first.provider.toUpperCase() + '] ' + first.caller + ': ' + first.task;
           approvalBox.style.display = 'block';
         } else {
           approvalBox.style.display = 'none';
@@ -1040,18 +1048,30 @@ export class MasterPanelProvider implements vscode.WebviewViewProvider {
       }
     }
 
+    // Direct client-side fetch from the server
+    async function pollStatusDirect() {
+      try {
+        const res = await fetch('http://127.0.0.1:4040/health');
+        if (res.ok) {
+          const data = await res.json();
+          updateStatus(data, null);
+          return;
+        }
+      } catch (e) {
+        // Fallback
+      }
+      vscode.postMessage({ type: 'CHECK_STATUS' });
+    }
+
+    // Initial check & interval
+    pollStatusDirect();
+    setInterval(pollStatusDirect, 2500);
+
     function renderAdvisorResult(result) {
       resultBox.style.display = 'block';
 
       if (!result.success) {
-        resultBox.innerHTML = \`
-          <div class="result-card" style="border-color: #c62828;">
-            <div class="result-header" style="color: #ef5350;">
-              <span>❌ Execution Error</span>
-            </div>
-            <pre>\${escapeHtml(result.error || 'Unknown error')}</pre>
-          </div>
-        \`;
+        resultBox.innerHTML = '<div class="result-card" style="border-color: #c62828;"><div class="result-header" style="color: #ef5350;"><span>❌ Execution Error</span></div><pre>' + escapeHtml(result.error || 'Unknown error') + '</pre></div>';
         return;
       }
 
@@ -1060,37 +1080,13 @@ export class MasterPanelProvider implements vscode.WebviewViewProvider {
 
       let codeBlocksHtml = '';
       if (codeBlocks.length > 0) {
-        codeBlocksHtml = \`
-          <div style="margin-top: 10px; font-weight: 600; font-size: 11px;">
-            <span>EXTRACTED PRODUCTION CODE:</span>
-          </div>
-        \`;
+        codeBlocksHtml = '<div style="margin-top: 10px; font-weight: 600; font-size: 11px;"><span>EXTRACTED PRODUCTION CODE:</span></div>';
         codeBlocks.forEach((code, i) => {
-          codeBlocksHtml += \`
-            <div style="margin-top: 6px;">
-              <pre id="code-block-\${i}">\${escapeHtml(code)}</pre>
-              <div class="action-row">
-                <button type="button" class="btn btn-secondary insert-code-btn" data-idx="\${i}">
-                  Insert into Editor
-                </button>
-                <button type="button" class="btn btn-secondary copy-code-btn" data-idx="\${i}">
-                  Copy
-                </button>
-              </div>
-            </div>
-          \`;
+          codeBlocksHtml += '<div style="margin-top: 6px;"><pre id="code-block-' + i + '">' + escapeHtml(code) + '</pre><div class="action-row"><button type="button" class="btn btn-secondary insert-code-btn" data-idx="' + i + '">Insert into Editor</button><button type="button" class="btn btn-secondary copy-code-btn" data-idx="' + i + '">Copy</button></div></div>';
         });
       }
 
-      resultBox.innerHTML = \`
-        <div class="result-card">
-          <div class="result-header">
-            <span>💡 \${result.provider?.toUpperCase()} ADVICE (\${durationSec}s)</span>
-          </div>
-          <pre>\${escapeHtml(result.advice)}</pre>
-          \${codeBlocksHtml}
-        </div>
-      \`;
+      resultBox.innerHTML = '<div class="result-card"><div class="result-header"><span>💡 ' + (result.provider || '').toUpperCase() + ' ADVICE (' + durationSec + 's)</span></div><pre>' + escapeHtml(result.advice) + '</pre>' + codeBlocksHtml + '</div>';
 
       resultBox.querySelectorAll('.insert-code-btn').forEach((btn) => {
         btn.addEventListener('click', (e) => {
@@ -1112,47 +1108,17 @@ export class MasterPanelProvider implements vscode.WebviewViewProvider {
       resultBox.style.display = 'block';
 
       if (!result.success) {
-        resultBox.innerHTML = \`
-          <div class="result-card" style="border-color: #c62828;">
-            <div class="result-header" style="color: #ef5350;">
-              <span>❌ Multi-Tab Consensus Error</span>
-            </div>
-            <pre>\${escapeHtml(result.error || 'Failed to synthesize consensus')}</pre>
-          </div>
-        \`;
+        resultBox.innerHTML = '<div class="result-card" style="border-color: #c62828;"><div class="result-header" style="color: #ef5350;"><span>❌ Multi-Tab Consensus Error</span></div><pre>' + escapeHtml(result.error || 'Failed to synthesize consensus') + '</pre></div>';
         return;
       }
 
       let breakdownHtml = '';
       const breakdown = result.breakdown || {};
       for (const [provider, text] of Object.entries(breakdown)) {
-        breakdownHtml += \`
-          <div class="breakdown-item">
-            <div class="breakdown-header">
-              <span>🤖 \${provider.toUpperCase()} Reply</span>
-              <span class="insert-sub-btn" data-reply="\${escapeHtml(text)}" style="cursor: pointer; color: var(--vscode-button-background);">Insert</span>
-            </div>
-            <div class="breakdown-body">\${escapeHtml(text)}</div>
-          </div>
-        \`;
+        breakdownHtml += '<div class="breakdown-item"><div class="breakdown-header"><span>🤖 ' + provider.toUpperCase() + ' Reply</span><span class="insert-sub-btn" data-reply="' + escapeHtml(text) + '" style="cursor: pointer; color: var(--vscode-button-background);">Insert</span></div><div class="breakdown-body">' + escapeHtml(text) + '</div></div>';
       }
 
-      resultBox.innerHTML = \`
-        <div class="result-card" style="border-color: rgba(99, 102, 241, 0.4); background: rgba(99, 102, 241, 0.05);">
-          <div class="result-header">
-            <span class="consensus-badge-pill">🧠 \${escapeHtml(result.sourceModel || 'Local AI Consensus')}</span>
-            <div class="action-row" style="margin-top: 0;">
-              <button type="button" class="btn btn-secondary" id="insert-consensus-btn">Insert</button>
-              <button type="button" class="btn btn-secondary" id="copy-consensus-btn">Copy</button>
-            </div>
-          </div>
-          <pre id="consensus-main-text">\${escapeHtml(result.consensus)}</pre>
-          <div style="margin-top: 10px; font-weight: 600; font-size: 10px; text-transform: uppercase; color: var(--vscode-descriptionForeground);">
-            Individual Model Responses:
-          </div>
-          \${breakdownHtml}
-        </div>
-      \`;
+      resultBox.innerHTML = '<div class="result-card" style="border-color: rgba(99, 102, 241, 0.4); background: rgba(99, 102, 241, 0.05);"><div class="result-header"><span class="consensus-badge-pill">🧠 ' + escapeHtml(result.sourceModel || 'Local AI Consensus') + '</span><div class="action-row" style="margin-top: 0;"><button type="button" class="btn btn-secondary" id="insert-consensus-btn">Insert</button><button type="button" class="btn btn-secondary" id="copy-consensus-btn">Copy</button></div></div><pre id="consensus-main-text">' + escapeHtml(result.consensus) + '</pre><div style="margin-top: 10px; font-weight: 600; font-size: 10px; text-transform: uppercase; color: var(--vscode-descriptionForeground);">Individual Model Responses:</div>' + breakdownHtml + '</div>';
 
       document.getElementById('insert-consensus-btn')?.addEventListener('click', () => {
         vscode.postMessage({ type: 'INSERT_CODE', code: result.consensus });
@@ -1175,11 +1141,6 @@ export class MasterPanelProvider implements vscode.WebviewViewProvider {
       div.textContent = text || '';
       return div.innerHTML;
     }
-
-    // Auto-sync status
-    setInterval(() => {
-      vscode.postMessage({ type: 'CHECK_STATUS' });
-    }, 4000);
   </script>
 </body>
 </html>`;

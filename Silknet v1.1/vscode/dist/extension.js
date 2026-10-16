@@ -3,11 +3,37 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.activate = activate;
 exports.deactivate = deactivate;
 const vscode = require("vscode");
+const http = require("http");
 const master_panel_1 = require("./master-panel");
 const SERVER_BASE = 'http://127.0.0.1:4040';
 let statusBarItem;
 let outputChannel;
 let masterPanelProvider;
+function httpGetJson(urlStr) {
+    return new Promise((resolve) => {
+        const req = http.get(urlStr, (res) => {
+            if (res.statusCode !== 200) {
+                res.resume();
+                return resolve(null);
+            }
+            let data = '';
+            res.on('data', (chunk) => (data += chunk));
+            res.on('end', () => {
+                try {
+                    resolve(JSON.parse(data));
+                }
+                catch {
+                    resolve(null);
+                }
+            });
+        });
+        req.on('error', () => resolve(null));
+        req.setTimeout(2500, () => {
+            req.destroy();
+            resolve(null);
+        });
+    });
+}
 function activate(context) {
     outputChannel = vscode.window.createOutputChannel('Silknet v1.1');
     // 0. Register Master Webview Panel
@@ -22,7 +48,7 @@ function activate(context) {
     const timer = setInterval(() => {
         updateStatusBar();
         masterPanelProvider.syncStatus();
-    }, 4000);
+    }, 3000);
     context.subscriptions.push({ dispose: () => clearInterval(timer) });
     // 2. Command: Multi-Tab AI Consensus
     const consensusCmd = vscode.commands.registerCommand('tabBridge.consensusAI', async () => {
@@ -68,7 +94,7 @@ function activate(context) {
     // 5. Command: Check Status
     const statusCmd = vscode.commands.registerCommand('tabBridge.checkStatus', async () => {
         try {
-            const status = await fetchStatus();
+            const status = await httpGetJson(`${SERVER_BASE}/health`);
             if (!status) {
                 vscode.window.showErrorMessage('Silknet Server is offline. Please run "npm start" in the server folder.');
                 return;
@@ -91,7 +117,7 @@ function activate(context) {
 function deactivate() { }
 async function updateStatusBar() {
     try {
-        const status = await fetchStatus();
+        const status = await httpGetJson(`${SERVER_BASE}/health`);
         if (!status) {
             statusBarItem.text = `$(circle-slash) Silknet: Offline`;
             statusBarItem.tooltip = `Silknet server is not running on ${SERVER_BASE}`;
@@ -111,20 +137,6 @@ async function updateStatusBar() {
     }
     catch {
         statusBarItem.text = `$(circle-slash) Silknet: Offline`;
-    }
-}
-async function fetchStatus() {
-    try {
-        const controller = new AbortController();
-        const id = setTimeout(() => controller.abort(), 2000);
-        const res = await fetch(`${SERVER_BASE}/health`, { signal: controller.signal });
-        clearTimeout(id);
-        if (!res.ok)
-            return null;
-        return await res.json();
-    }
-    catch {
-        return null;
     }
 }
 async function executeConsensusWithProgress(prompt) {

@@ -1,10 +1,36 @@
 import * as vscode from 'vscode';
+import * as http from 'http';
 import { MasterPanelProvider } from './master-panel';
 
 const SERVER_BASE = 'http://127.0.0.1:4040';
 let statusBarItem: vscode.StatusBarItem;
 let outputChannel: vscode.OutputChannel;
 let masterPanelProvider: MasterPanelProvider;
+
+function httpGetJson(urlStr: string): Promise<any> {
+  return new Promise((resolve) => {
+    const req = http.get(urlStr, (res) => {
+      if (res.statusCode !== 200) {
+        res.resume();
+        return resolve(null);
+      }
+      let data = '';
+      res.on('data', (chunk) => (data += chunk));
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(data));
+        } catch {
+          resolve(null);
+        }
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.setTimeout(2500, () => {
+      req.destroy();
+      resolve(null);
+    });
+  });
+}
 
 export function activate(context: vscode.ExtensionContext) {
   outputChannel = vscode.window.createOutputChannel('Silknet v1.1');
@@ -25,7 +51,7 @@ export function activate(context: vscode.ExtensionContext) {
   const timer = setInterval(() => {
     updateStatusBar();
     masterPanelProvider.syncStatus();
-  }, 4000);
+  }, 3000);
   context.subscriptions.push({ dispose: () => clearInterval(timer) });
 
   // 2. Command: Multi-Tab AI Consensus
@@ -80,7 +106,7 @@ export function activate(context: vscode.ExtensionContext) {
   // 5. Command: Check Status
   const statusCmd = vscode.commands.registerCommand('tabBridge.checkStatus', async () => {
     try {
-      const status = await fetchStatus();
+      const status = await httpGetJson(`${SERVER_BASE}/health`);
       if (!status) {
         vscode.window.showErrorMessage('Silknet Server is offline. Please run "npm start" in the server folder.');
         return;
@@ -107,7 +133,7 @@ export function deactivate() {}
 
 async function updateStatusBar() {
   try {
-    const status = await fetchStatus();
+    const status = await httpGetJson(`${SERVER_BASE}/health`);
     if (!status) {
       statusBarItem.text = `$(circle-slash) Silknet: Offline`;
       statusBarItem.tooltip = `Silknet server is not running on ${SERVER_BASE}`;
@@ -127,19 +153,6 @@ async function updateStatusBar() {
     }
   } catch {
     statusBarItem.text = `$(circle-slash) Silknet: Offline`;
-  }
-}
-
-async function fetchStatus(): Promise<any | null> {
-  try {
-    const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), 2000);
-    const res = await fetch(`${SERVER_BASE}/health`, { signal: controller.signal });
-    clearTimeout(id);
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
   }
 }
 
