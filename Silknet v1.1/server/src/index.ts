@@ -10,9 +10,36 @@ const HOST = '127.0.0.1';
 
 const tabManager = new TabManager();
 
+function isOriginAllowed(origin?: string): boolean {
+  if (!origin) return true; // Local direct requests (Node.js, curl, terminal tools)
+  const lower = origin.toLowerCase();
+  return (
+    lower.startsWith('chrome-extension://') ||
+    lower.startsWith('vscode-webview://') ||
+    lower.startsWith('http://127.0.0.1') ||
+    lower.startsWith('http://localhost') ||
+    lower.startsWith('https://127.0.0.1') ||
+    lower.startsWith('https://localhost')
+  );
+}
+
 // Create HTTP server
 const server = http.createServer(async (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  const origin = req.headers.origin;
+
+  // Block cross-site requests from untrusted public web domains
+  if (origin && !isOriginAllowed(origin)) {
+    console.warn(`[Security] 🚫 Blocked cross-site HTTP request from unauthorized origin: ${origin}`);
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Access denied: Cross-origin request from unauthorized domain.' }));
+    return;
+  }
+
+  if (origin && isOriginAllowed(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', 'http://127.0.0.1');
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-tab-bridge-source');
 
@@ -235,6 +262,13 @@ const server = http.createServer(async (req, res) => {
 const wss = new WebSocketServer({ server, path: '/ws' });
 
 wss.on('connection', (ws: WebSocket, req) => {
+  const wsOrigin = req.headers.origin;
+  if (wsOrigin && !isOriginAllowed(wsOrigin)) {
+    console.warn(`[Security] 🚫 Rejected WebSocket connection from unauthorized origin: ${wsOrigin}`);
+    ws.close(1008, 'Unauthorized origin');
+    return;
+  }
+
   console.log('[Silknet Server] 🔌 Browser extension connected to WebSocket');
 
   ws.on('message', (messageData: string) => {

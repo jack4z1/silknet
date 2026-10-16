@@ -25,15 +25,15 @@ console.log('========================================================\n');
 // 1. PrivacyShield Security & Redaction Tests
 console.log('1. PrivacyShield Redaction Tests:');
 {
-  const text = 'Check C:\\Users\\jack0\\Desktop\\project\\secret.env with sk-abcdef1234567890abcdef1234567890 and AWS key AKIAIOSFODNN7EXAMPLE and IP 192.168.1.100';
-  const result = PrivacyShield.sanitize(text, 'jack0');
+  const text = 'Check C:\\Users\\developer\\Desktop\\project\\secret.env with sk-TEST-MOCK-KEY-000000000000000000000000 and AWS key AKIAIOSFODNN7EXAMPLE and IP 192.168.1.100';
+  const result = PrivacyShield.sanitize(text, 'developer');
 
-  assert(!result.cleanText.includes('sk-abcdef1234567890abcdef1234567890'), 'OpenAI API key was redacted');
+  assert(!result.cleanText.includes('sk-TEST-MOCK-KEY-000000000000000000000000'), 'OpenAI API key was redacted');
   assert(result.cleanText.includes('[REDACTED_OPENAI_API_KEY]'), 'API key replaced with redacted token');
   assert(!result.cleanText.includes('AKIAIOSFODNN7EXAMPLE'), 'AWS access key was redacted');
   assert(!result.cleanText.includes('192.168.1.100'), 'External IP address was redacted');
   assert(result.cleanText.includes('[PROJECT]/Desktop/project/secret.env'), 'Windows user path was neutralized to relative [PROJECT]/ path');
-  assert(!result.cleanText.includes('jack0'), 'User name "jack0" was redacted');
+  assert(!result.cleanText.includes('developer'), 'User name was redacted');
   assert(result.redactedCount >= 4, `Redacted ${result.redactedCount} items`);
 }
 
