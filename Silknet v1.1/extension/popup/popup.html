@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Silknet v1.1</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <!-- Header Bar -->
+  <div class="header">
+    <div class="brand">
+      <svg width="20" height="20" viewBox="0 0 100 100" fill="none">
+        <path d="M 12 28 L 32 44 L 68 44 L 88 28" stroke="#ffffff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M 12 72 L 32 56 L 68 56 L 88 72" stroke="#ffffff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span>Silknet</span>
+      <span class="version-tag">v1.1</span>
+    </div>
+
+    <!-- Master ON/OFF Switch -->
+    <div class="toggle-container">
+      <label class="switch" title="Toggle Silknet Bridge On/Off">
+        <input type="checkbox" id="master-toggle" checked>
+        <span class="slider round"></span>
+      </label>
+    </div>
+  </div>
+
+  <!-- Overall Server Connection Status -->
+  <div id="server-status" class="status-card disconnected">
+    <div class="status-icon-dot"></div>
+    <span id="server-status-text">Connecting to Server...</span>
+  </div>
+
+  <!-- AI Tabs Selection Section (Up to 3 Tabs) -->
+  <div class="tabs-section">
+    <div class="section-title">ACTIVE AI TABS (MAX 3)</div>
+    <div class="tab-button-grid">
+      <!-- ChatGPT Button -->
+      <button type="button" class="tab-btn selected" id="btn-chatgpt" data-provider="chatgpt">
+        <div class="tab-btn-header">
+          <span class="tab-name">ChatGPT</span>
+          <span class="check-mark">✓</span>
+        </div>
+        <div class="tab-indicator-row">
+          <span class="indicator-dot dot-red" id="dot-chatgpt"></span>
+          <span class="indicator-label" id="lbl-chatgpt">Offline</span>
+        </div>
+      </button>
+
+      <!-- Claude Button -->
+      <button type="button" class="tab-btn selected" id="btn-claude" data-provider="claude">
+        <div class="tab-btn-header">
+          <span class="tab-name">Claude</span>
+          <span class="check-mark">✓</span>
+        </div>
+        <div class="tab-indicator-row">
+          <span class="indicator-dot dot-red" id="dot-claude"></span>
+          <span class="indicator-label" id="lbl-claude">Offline</span>
+        </div>
+      </button>
+
+      <!-- Gemini Button -->
+      <button type="button" class="tab-btn selected" id="btn-gemini" data-provider="gemini">
+        <div class="tab-btn-header">
+          <span class="tab-name">Gemini</span>
+          <span class="check-mark">✓</span>
+        </div>
+        <div class="tab-indicator-row">
+          <span class="indicator-dot dot-red" id="dot-gemini"></span>
+          <span class="indicator-label" id="lbl-gemini">Offline</span>
+        </div>
+      </button>
+    </div>
+  </div>
+
+  <!-- Footer Info -->
+  <div class="footer">
+    <span>🔒 Processing & Local AI in VS Code</span>
+    <span class="endpoint-pill">127.0.0.1:4040</span>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

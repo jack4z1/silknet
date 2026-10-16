@@ -14,11 +14,12 @@
   * Single-tab routing and multi-tab broadcasting
   * Ready-to-install packages in `Silknet v1.0/release/`
 
-* **[`Silknet v1.1/`](./Silknet%20v1.1)** — The upcoming next-gen Silknet v1.1:
-  * Dynamic multi-tab AI debate (ChatGPT + Claude + Gemini) with automated synthesis
-  * File attachment pipeline (up to 20MB, up to 5 images/documents)
-  * Voice prompting / Speech-to-Text
-  * Enhanced browser extension popup with tab selectors and status indicators
+* **[`Silknet v1.1/`](./Silknet%20v1.1)** — The latest Silknet v1.1 release:
+  * Dynamic multi-tab AI consensus (ChatGPT + Claude + Gemini) with automated Local AI synthesis
+  * Real file & image attachment pipeline via DataTransfer (up to 20MB, up to 5 images/documents)
+  * Voice prompting / Speech-to-Text directly in the VS Code Master Panel
+  * Ultra-clean browser extension popup with master toggle, tab selectors, and live status dots
+  * Ready-to-install packages in `Silknet v1.1/release/` (`silknet-1.1.0.vsix` and `silknet-chrome-v1.1.0.zip`)
 
 ---
 

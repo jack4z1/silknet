@@ -1,0 +1,20 @@
+{
+  "name": "silknet-server",
+  "version": "1.1.0",
+  "description": "Silknet v1.1 Bridge Server connecting IDE & Local AI to Web Browser AI tabs (Multi-Tab Consensus & Attachments)",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "node --loader ts-node/esm src/index.ts"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.6.0"
+  }
+}
