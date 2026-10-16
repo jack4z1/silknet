@@ -91,8 +91,9 @@ async function handleExecutePrompt(promptText, attachments) {
     throw new Error(`Could not find chat composer on ${PROVIDER}`);
   }
 
-  // Record baseline turns before submission
+  // Record baseline turns and text before submission
   const baselineCount = countAssistantTurns(PROVIDER);
+  const baselineText = extractLatestReply(PROVIDER);
 
   // 2. Inject real file/image attachments if present
   if (attachments && attachments.length > 0) {
@@ -104,11 +105,11 @@ async function handleExecutePrompt(promptText, attachments) {
   // 3. Inject prompt text
   await injectText(composer, promptText, PROVIDER);
 
-  // 4. Trigger auto-send
+  // 4. Trigger auto-send (waits for upload to finish and send button to be enabled)
   await autoSend(composer, PROVIDER);
 
   // 5. Wait for streaming response completion
-  const reply = await waitForResponseCompletion(PROVIDER, baselineCount);
+  const reply = await waitForResponseCompletion(PROVIDER, baselineCount, baselineText);
 
   return {
     success: true,
@@ -193,7 +194,14 @@ async function injectAttachments(composer, attachments, provider) {
     }
   }
 
-  // Strategy B: Synthetic paste event directly onto composer (crucial for modern Web AI dropzones)
+  // If native file input succeeded, STOP HERE. Do not fire paste or drop events to prevent duplicates!
+  if (attached) {
+    console.log('[Silknet v1.1] Native file attachment successful, skipping paste/drop fallbacks.');
+    await sleep(1000);
+    return;
+  }
+
+  // Strategy B: Synthetic paste event directly onto composer (for dropzones without accessible file input)
   try {
     composer.focus();
     const pasteEvent = new ClipboardEvent('paste', {
@@ -203,6 +211,8 @@ async function injectAttachments(composer, attachments, provider) {
     });
     composer.dispatchEvent(pasteEvent);
     console.log('[Silknet v1.1] Dispatched synthetic paste event with DataTransfer items');
+    await sleep(1000);
+    return;
   } catch (e) {
     console.warn('[Silknet v1.1] Synthetic paste event fallback:', e);
   }
@@ -215,8 +225,9 @@ async function injectAttachments(composer, attachments, provider) {
       dataTransfer: dt,
     });
     composer.dispatchEvent(dropEvent);
+    console.log('[Silknet v1.1] Dispatched drop event fallback');
   } catch (e) {
-    // Optional fallback
+    console.warn('[Silknet v1.1] Drop event fallback warning:', e);
   }
 
   await sleep(1000);
@@ -299,51 +310,100 @@ async function injectText(el, text, provider) {
   await sleep(300);
 }
 
+async function waitForSendButtonReady(provider, maxWaitMs = 15000) {
+  const start = Date.now();
+  console.log(`[Silknet v1.1] Waiting for send button to be ready and enabled on ${provider}...`);
+
+  while (Date.now() - start < maxWaitMs) {
+    if (isAborted) throw new Error('Execution aborted by user emergency stop.');
+
+    // Check if any file upload loading spinner / progress is still active
+    const isUploading = Boolean(
+      document.querySelector(
+        '.animate-spin, svg.animate-spin, [data-testid*="uploading" i], [aria-label*="uploading" i], [aria-label*="loading" i], div[class*="loading" i]'
+      )
+    );
+
+    const btn = findSendButton(provider);
+    if (btn && isVisible(btn)) {
+      const isDisabled =
+        btn.disabled ||
+        btn.getAttribute('aria-disabled') === 'true' ||
+        btn.hasAttribute('disabled') ||
+        btn.classList.contains('disabled');
+
+      if (!isDisabled && !isUploading) {
+        console.log(`[Silknet v1.1] Send button is enabled and ready on ${provider} (waited ${Date.now() - start}ms)`);
+        return btn;
+      }
+    }
+    await sleep(250);
+  }
+
+  console.warn(`[Silknet v1.1] Send button ready wait timed out on ${provider}, proceeding with best candidate`);
+  return findSendButton(provider);
+}
+
 async function autoSend(composerEl, provider) {
   console.log(`[Silknet v1.1] Triggering Auto-Send on ${provider}...`);
   const view = composerEl.ownerDocument.defaultView || window;
 
-  const sendBtn = findSendButton(provider);
+  // 1. Wait until send button is enabled (and file uploads complete)
+  const sendBtn = await waitForSendButtonReady(provider, 15000);
+
+  // 2. Click the send button with complete pointer/mouse sequence
   let clicked = false;
-
   if (sendBtn) {
-    sendBtn.removeAttribute('disabled');
-    sendBtn.disabled = false;
-
     try {
+      sendBtn.focus();
       sendBtn.dispatchEvent(new view.PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
       sendBtn.dispatchEvent(new view.MouseEvent('mousedown', { bubbles: true, cancelable: true }));
       sendBtn.dispatchEvent(new view.PointerEvent('pointerup', { bubbles: true, cancelable: true }));
       sendBtn.dispatchEvent(new view.MouseEvent('mouseup', { bubbles: true, cancelable: true }));
       sendBtn.click();
       clicked = true;
+      console.log(`[Silknet v1.1] Dispatched click to send button on ${provider}`);
     } catch (e) {
-      console.log('[Silknet v1.1] Button click fallback to Enter key');
+      console.warn(`[Silknet v1.1] Send button click error on ${provider}:`, e);
     }
   }
 
-  await sleep(400);
+  await sleep(600);
 
-  // If send button click didn't trigger, or if button wasn't found, dispatch Enter key
+  // 3. Fallback: If still has text in composer and generation hasn't started, dispatch Enter key
   const stillHasText = (composerEl.value || composerEl.textContent || '').trim().length > 0;
-  if (!clicked || stillHasText) {
+  const stopPresent = isStopButtonPresent(provider);
+
+  if (!stopPresent && stillHasText) {
+    console.log(`[Silknet v1.1] Input text remains after click, triggering Enter key fallback on ${provider}...`);
     composerEl.focus();
-    composerEl.dispatchEvent(new view.KeyboardEvent('keydown', {
+
+    const enterOpts = {
       key: 'Enter',
       code: 'Enter',
       keyCode: 13,
       which: 13,
       bubbles: true,
       cancelable: true,
-    }));
-    composerEl.dispatchEvent(new view.KeyboardEvent('keyup', {
-      key: 'Enter',
-      code: 'Enter',
-      keyCode: 13,
-      which: 13,
-      bubbles: true,
-      cancelable: true,
-    }));
+      composed: true,
+      shiftKey: false,
+      ctrlKey: false,
+      metaKey: false,
+    };
+
+    composerEl.dispatchEvent(new view.KeyboardEvent('keydown', enterOpts));
+    composerEl.dispatchEvent(new view.KeyboardEvent('keypress', enterOpts));
+    composerEl.dispatchEvent(new view.KeyboardEvent('keyup', enterOpts));
+
+    await sleep(600);
+
+    // If still not sent, retry clicking send button again
+    const retryBtn = findSendButton(provider);
+    if (retryBtn && !retryBtn.disabled && retryBtn.getAttribute('aria-disabled') !== 'true') {
+      try {
+        retryBtn.click();
+      } catch {}
+    }
   }
 }
 
@@ -352,28 +412,37 @@ function findSendButton(provider) {
   if (provider === 'chatgpt') {
     selectors = [
       'button[data-testid="send-button"]',
-      'button[aria-label*="Send"]',
-      'button[aria-label*="send"]',
+      'button[data-testid="fruitjuice-send-button"]',
+      'button[data-testid="composer-send-button"]',
+      'button[aria-label="Send prompt"]',
+      'button[aria-label="Send message"]',
+      'button[aria-label*="Send" i]',
+      'button[aria-label*="send" i]',
+      '#composer-background button[data-testid="send-button"]',
+      '#composer-background button:has(svg)',
+      'form button[data-testid="send-button"]',
       'form button:last-of-type'
     ];
   } else if (provider === 'claude') {
     selectors = [
-      'button[aria-label*="Send"]',
-      'button[aria-label*="send"]',
+      'button[aria-label*="Send" i]',
+      'button[data-testid*="send" i]',
       'button:has(svg)'
     ];
   } else if (provider === 'gemini') {
     selectors = [
-      'button[aria-label*="Send"]',
-      'button[aria-label*="send"]',
+      'button[aria-label*="Send" i]',
       'button.send-button',
-      'div.send-button'
+      'div.send-button',
+      'button:has(mat-icon)'
     ];
   }
 
   for (const s of selectors) {
-    const el = document.querySelector(s);
-    if (el && isVisible(el)) return el;
+    try {
+      const el = document.querySelector(s);
+      if (el && isVisible(el)) return el;
+    } catch {}
   }
   return null;
 }
@@ -383,7 +452,9 @@ function countAssistantTurns(provider) {
     return document.querySelectorAll('article, [data-message-author-role="assistant"]').length;
   }
   if (provider === 'claude') {
-    return document.querySelectorAll('div[data-is-streaming], div.font-claude-message, [data-message-author="assistant"]').length;
+    return document.querySelectorAll(
+      'div[data-is-streaming], div.font-claude-message, [data-message-author="assistant"], div[class*="font-claude-message"], [data-testid="message-content"]'
+    ).length;
   }
   if (provider === 'gemini') {
     return document.querySelectorAll('model-response, message-content, [data-test-id="model-response"]').length;
@@ -391,7 +462,7 @@ function countAssistantTurns(provider) {
   return 0;
 }
 
-async function waitForResponseCompletion(provider, baselineCount, maxTimeoutMs = 180000) {
+async function waitForResponseCompletion(provider, baselineCount, baselineText = '', maxTimeoutMs = 180000) {
   console.log(`[Silknet v1.1] Waiting for completion on ${provider} (baseline turns: ${baselineCount})...`);
   const start = Date.now();
 
@@ -400,7 +471,8 @@ async function waitForResponseCompletion(provider, baselineCount, maxTimeoutMs =
     if (isAborted) {
       throw new Error('Execution aborted by user emergency stop.');
     }
-    if (isStopButtonPresent(provider) || countAssistantTurns(provider) > baselineCount) {
+    const curReply = extractLatestReply(provider);
+    if (isStopButtonPresent(provider) || countAssistantTurns(provider) > baselineCount || (curReply.length > 0 && curReply !== baselineText)) {
       started = true;
       break;
     }
@@ -421,10 +493,10 @@ async function waitForResponseCompletion(provider, baselineCount, maxTimeoutMs =
       stableTicks = 0;
       lastText = currentReply;
     } else {
-      if (currentReply.length > 0 && currentReply === lastText) {
+      if (currentReply.length > 0 && currentReply !== baselineText && currentReply === lastText) {
         stableTicks++;
         if (stableTicks >= 3) { // 3 consecutive ticks of stability (~1.2s)
-          console.log('[Silknet v1.1] AI generation complete and verified stable.');
+          console.log(`[Silknet v1.1] AI generation complete and verified stable on ${provider}.`);
           return currentReply;
         }
       } else {
@@ -442,16 +514,30 @@ async function waitForResponseCompletion(provider, baselineCount, maxTimeoutMs =
 function isStopButtonPresent(provider) {
   let selectors = [];
   if (provider === 'chatgpt') {
-    selectors = ['button[data-testid="stop-button"]', 'button[aria-label*="Stop"]'];
+    selectors = [
+      'button[data-testid="stop-button"]',
+      'button[aria-label*="Stop" i]',
+      'button[data-testid*="stop" i]'
+    ];
   } else if (provider === 'claude') {
-    selectors = ['button[aria-label*="Stop"]', 'button[data-testid*="stop"]'];
+    selectors = [
+      'button[aria-label*="Stop" i]',
+      'button[data-testid*="stop" i]',
+      'button:has(svg rect)'
+    ];
   } else if (provider === 'gemini') {
-    selectors = ['button[aria-label*="Stop"]', 'button[data-test-id*="stop"]'];
+    selectors = [
+      'button[aria-label*="Stop" i]',
+      'button[data-test-id*="stop" i]',
+      'button.stop-button'
+    ];
   }
 
   for (const s of selectors) {
-    const el = document.querySelector(s);
-    if (el && isVisible(el)) return true;
+    try {
+      const el = document.querySelector(s);
+      if (el && isVisible(el)) return true;
+    } catch {}
   }
   return false;
 }
@@ -461,7 +547,11 @@ function extractLatestReply(provider) {
   if (provider === 'chatgpt') {
     elements = Array.from(document.querySelectorAll('div[data-message-author-role="assistant"], article'));
   } else if (provider === 'claude') {
-    elements = Array.from(document.querySelectorAll('div.font-claude-message, [data-message-author="assistant"], div.grid-cols-1'));
+    elements = Array.from(
+      document.querySelectorAll(
+        'div.font-claude-message, [data-message-author="assistant"], div[class*="font-claude-message"], [data-testid="message-content"]'
+      )
+    );
   } else if (provider === 'gemini') {
     elements = Array.from(document.querySelectorAll('model-response, message-content, [data-test-id="model-response"]'));
   }
