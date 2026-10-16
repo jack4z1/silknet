@@ -494,7 +494,7 @@ function findSendButton(provider) {
 
 function countAssistantTurns(provider) {
   if (provider === 'chatgpt') {
-    return document.querySelectorAll('div[data-message-author-role="assistant"], article').length;
+    return document.querySelectorAll('[data-message-author-role="assistant"], article .markdown, div.agent-turn').length;
   }
   if (provider === 'claude') {
     return document.querySelectorAll(
@@ -525,7 +525,7 @@ async function waitForResponseCompletion(provider, baselineCount, maxTimeoutMs =
     await sleep(250);
   }
 
-  // 2. Wait for generation to complete (stop button disappears and text is stable)
+  // 2. Wait for generation to complete (stop button disappears, send button returns, or text stabilizes)
   let lastText = '';
   let stableTicks = 0;
 
@@ -533,27 +533,40 @@ async function waitForResponseCompletion(provider, baselineCount, maxTimeoutMs =
     if (isAborted) {
       throw new Error('Execution aborted by user emergency stop.');
     }
+
     const stopPresent = isStopButtonPresent(provider);
+    const sendBtn = findSendButton(provider);
+    const sendBtnReady = sendBtn && isVisible(sendBtn);
     const currentReply = extractLatestReply(provider);
 
-    if (stopPresent) {
+    // If the Send button has reappeared in the composer, streaming has ended
+    const isStreaming = stopPresent && !sendBtnReady;
+
+    if (currentReply.length > 0) {
+      if (currentReply === lastText) {
+        stableTicks++;
+      } else {
+        lastText = currentReply;
+        stableTicks = 0;
+      }
+    }
+
+    if (isStreaming) {
       started = true;
-      stableTicks = 0;
-      lastText = currentReply;
+      // While streaming, text is arriving. If text has NOT changed for 8 consecutive ticks (~3.2s),
+      // it means streaming has finished even if the stop button was not cleanly unmounted
+      if (currentReply.length > 0 && stableTicks >= 8) {
+        console.log(`[Silknet v1.1] AI generation complete on ${provider} (stream stabilized, ${currentReply.length} chars).`);
+        return currentReply;
+      }
     } else {
+      // Not streaming: stop button is absent OR send button has returned
       if (currentReply.length > 0) {
-        if (currentReply === lastText) {
-          stableTicks++;
-          if (stableTicks >= 3) { // 3 consecutive ticks of stability (~1.2s)
-            console.log(`[Silknet v1.1] AI generation complete and verified stable on ${provider} (${currentReply.length} chars).`);
-            return currentReply;
-          }
-        } else {
-          lastText = currentReply;
-          stableTicks = 0;
+        if (stableTicks >= 2) { // 2 consecutive ticks (~800ms) of stable text after streaming finishes
+          console.log(`[Silknet v1.1] AI generation complete and verified stable on ${provider} (${currentReply.length} chars).`);
+          return currentReply;
         }
       } else if (started) {
-        // Generation started, stop button gone, but primary selector missed text. Check broad fallback.
         const fallbackText = extractBroadFallback(provider);
         if (fallbackText.length > 0) {
           console.log(`[Silknet v1.1] AI generation captured via broad fallback on ${provider} (${fallbackText.length} chars).`);
@@ -571,54 +584,39 @@ async function waitForResponseCompletion(provider, baselineCount, maxTimeoutMs =
 
 function isStopButtonPresent(provider) {
   if (provider === 'chatgpt') {
-    const selectors = [
-      'button[data-testid="stop-button"]',
-      'button[aria-label="Stop generating"]',
-      'button[aria-label="Stop streaming"]',
-      'button[aria-label*="Stop" i]',
-      'button[data-testid*="stop" i]'
-    ];
-    for (const s of selectors) {
-      try {
-        const el = document.querySelector(s);
-        if (el && isVisible(el)) return true;
-      } catch {}
+    // If the Send button has returned, ChatGPT is definitely not generating
+    const sendBtn = document.querySelector('button[data-testid="send-button"], button[data-testid="fruitjuice-send-button"], button[data-testid="composer-send-button"]');
+    if (sendBtn && isVisible(sendBtn)) {
+      return false;
+    }
+    const stopBtn = document.querySelector('button[data-testid="stop-button"], button[aria-label="Stop generating"], button[aria-label="Stop streaming"]');
+    if (stopBtn && isVisible(stopBtn)) {
+      return true;
     }
     return false;
   }
 
   if (provider === 'claude') {
-    // Anthropic native streaming indicator attribute
+    const sendBtn = document.querySelector('button[aria-label*="Send" i], button[data-testid*="send" i]');
+    if (sendBtn && isVisible(sendBtn)) {
+      const isStreaming = Boolean(document.querySelector('[data-is-streaming="true"], [data-is-streaming="1"]'));
+      if (!isStreaming) return false;
+    }
     if (document.querySelector('[data-is-streaming="true"], [data-is-streaming="1"]')) {
       return true;
     }
-    const selectors = [
-      'button[aria-label="Stop Response"]',
-      'button[aria-label*="Stop" i]',
-      'button[data-testid="stop-button"]',
-      'button[data-testid*="stop"]'
-    ];
-    for (const s of selectors) {
-      try {
-        const el = document.querySelector(s);
-        if (el && isVisible(el)) return true;
-      } catch {}
-    }
+    const stopBtn = document.querySelector('button[aria-label="Stop Response"], button[data-testid="stop-button"]');
+    if (stopBtn && isVisible(stopBtn)) return true;
     return false;
   }
 
   if (provider === 'gemini') {
-    const selectors = [
-      'button[aria-label*="Stop" i]',
-      'button[data-test-id*="stop" i]',
-      'button.stop-button'
-    ];
-    for (const s of selectors) {
-      try {
-        const el = document.querySelector(s);
-        if (el && isVisible(el)) return true;
-      } catch {}
+    const sendBtn = document.querySelector('button[aria-label*="Send" i], button.send-button');
+    if (sendBtn && isVisible(sendBtn)) {
+      return false;
     }
+    const stopBtn = document.querySelector('button[aria-label*="Stop" i], button.stop-button, button[data-test-id*="stop" i]');
+    if (stopBtn && isVisible(stopBtn)) return true;
     return false;
   }
 
@@ -628,9 +626,10 @@ function isStopButtonPresent(provider) {
 function extractLatestReply(provider) {
   let elements = [];
   if (provider === 'chatgpt') {
-    elements = Array.from(document.querySelectorAll('div[data-message-author-role="assistant"]'));
+    // Primary: assistant markdown container (cleanest, direct reply text)
+    elements = Array.from(document.querySelectorAll('[data-message-author-role="assistant"] .markdown, article .markdown, div.agent-turn .markdown, div.markdown'));
     if (elements.length === 0) {
-      elements = Array.from(document.querySelectorAll('article div.markdown, div.agent-turn, article div.prose'));
+      elements = Array.from(document.querySelectorAll('div[data-message-author-role="assistant"], div.agent-turn'));
     }
     if (elements.length === 0) {
       elements = Array.from(document.querySelectorAll('article'));
@@ -653,7 +652,7 @@ function extractLatestReply(provider) {
   const last = elements[elements.length - 1];
 
   const clone = last.cloneNode(true);
-  const buttons = clone.querySelectorAll('.copy-button, button[aria-label*="Copy" i], button[title*="Copy" i], button, svg, [role="button"]');
+  const buttons = clone.querySelectorAll('.copy-button, button, svg');
   buttons.forEach((b) => b.remove());
 
   return (clone.textContent || '').trim();
