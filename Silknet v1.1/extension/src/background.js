@@ -9,6 +9,18 @@ let selectedTabs = ['chatgpt', 'claude', 'gemini'];
 
 console.log('[Silknet v1.1 Worker] Service worker initialized');
 
+function safeSend(data) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    try {
+      ws.send(typeof data === 'string' ? data : JSON.stringify(data));
+      return true;
+    } catch (e) {
+      console.warn('[Silknet v1.1 Worker] Failed to send over WebSocket:', e);
+    }
+  }
+  return false;
+}
+
 // Initialize settings from chrome.storage
 chrome.storage.local.get({ enabled: true, selectedTabs: ['chatgpt', 'claude', 'gemini'] }, (data) => {
   isEnabled = data.enabled;
@@ -153,24 +165,20 @@ async function syncAllAiTabs() {
         title: tab.title,
         url: tab.url,
       });
-      ws.send(
-        JSON.stringify({
-          type: 'HELLO',
-          id: String(tab.id),
-          provider,
-          title: tab.title,
-          url: tab.url,
-        }),
-      );
+      safeSend({
+        type: 'HELLO',
+        id: String(tab.id),
+        provider,
+        title: tab.title,
+        url: tab.url,
+      });
     }
   }
 
-  ws.send(
-    JSON.stringify({
-      type: 'SYNC_ALL_TABS',
-      tabs: aiTabs,
-    }),
-  );
+  safeSend({
+    type: 'SYNC_ALL_TABS',
+    tabs: aiTabs,
+  });
 }
 
 // Single prompt execution
@@ -195,27 +203,23 @@ async function handleExecuteRequest(msg) {
       attachments: attachments || [],
     });
 
-    ws?.send(
-      JSON.stringify({
-        type: 'PROMPT_RESULT',
-        id,
-        provider: result?.provider || provider,
-        success: result?.success ?? false,
-        reply: result?.reply || '',
-        error: result?.error,
-      }),
-    );
+    safeSend({
+      type: 'PROMPT_RESULT',
+      id,
+      provider: result?.provider || provider,
+      success: result?.success ?? false,
+      reply: result?.reply || '',
+      error: result?.error,
+    });
   } catch (err) {
-    ws?.send(
-      JSON.stringify({
-        type: 'PROMPT_RESULT',
-        id,
-        provider,
-        success: false,
-        reply: '',
-        error: err instanceof Error ? err.message : String(err),
-      }),
-    );
+    safeSend({
+      type: 'PROMPT_RESULT',
+      id,
+      provider,
+      success: false,
+      reply: '',
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 
@@ -267,13 +271,11 @@ async function handleMultiExecuteRequest(msg) {
 
   const results = await Promise.all(dispatchPromises);
 
-  ws?.send(
-    JSON.stringify({
-      type: 'MULTI_PROMPT_RESULT',
-      id,
-      results,
-    }),
-  );
+  safeSend({
+    type: 'MULTI_PROMPT_RESULT',
+    id,
+    results,
+  });
 }
 
 async function ensureContentScript(tabId) {
@@ -328,21 +330,20 @@ function getProviderFromUrl(url) {
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status === 'complete' && tab.url) {
     const provider = getProviderFromUrl(tab.url);
-    if (provider && selectedTabs.includes(provider) && ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(
-        JSON.stringify({
-          type: 'HELLO',
-          id: String(tabId),
-          provider,
-          title: tab.title,
-          url: tab.url,
-        }),
-      );
+    if (provider && selectedTabs.includes(provider)) {
+      safeSend({
+        type: 'HELLO',
+        id: String(tabId),
+        provider,
+        title: tab.title,
+        url: tab.url,
+      });
     }
   }
 });
 
-chrome.tabs.onRemoved.addListener(() => {
+chrome.tabs.onRemoved.addListener((tabId) => {
+  safeSend({ type: 'TAB_CLOSED', id: String(tabId) });
   setTimeout(syncAllAiTabs, 200);
 });
 
@@ -352,7 +353,5 @@ chrome.windows.onRemoved.addListener(() => {
 
 // Keepalive ping
 setInterval(() => {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'PING' }));
-  }
+  safeSend({ type: 'PING' });
 }, 20000);
