@@ -1,85 +1,99 @@
-# Silknet v1.1 🌐
+# Silknet v1.1
 
-> **Connect Browser AI to Local AI — Multi-Tab AI Consensus, Voice Prompting & Native File Attachments**
+> Multi-Model Parallel Consensus, Native File Attachments, and Local Synthesis for Developers.
 
-Silknet v1.1 is the advanced bridge that turns your frontier web browser AI tabs (**ChatGPT, Claude, Gemini**) into an integrated consensus engine for your local IDE and local AI models (**Ollama / Qwen / Gemma / Llama**).
-
----
-
-## 🌟 What's New in v1.1
-
-### 1. 🧠 Multi-Tab AI Consensus (Max 3 Tabs)
-- Automatically detects open **ChatGPT**, **Claude**, and **Gemini** tabs in your browser.
-- Broadcasts your prompt to all active tabs simultaneously.
-- Formats replies dynamically:
-  - *Claude said [response]*
-  - *ChatGPT suggested [response]*
-  - *Gemini recommends [response]*
-- Feeds all three viewpoints into your **Local AI** (via Ollama at `127.0.0.1:11434` or Silknet's built-in local consensus synthesizer) to produce a unified, best-practice consensus solution.
-
-### 2. 📎 Real File & Image Attachments (Native DataTransfer)
-- **Direct DOM injection**: Fixes previous text-only injection limitations by attaching real binary files and images via the browser's native `DataTransfer` / `input[type="file"]` system.
-- **Strict Size Guard**: Maximum **20 MB** total attachment size.
-- **Quantity Guard**: Maximum **5 files** per prompt.
-- **Safety Filter**: Strictly excludes 3D files (`.obj`, `.gltf`, `.stl`, `.blend`), video files (`.mp4`, `.mov`, etc.), and audio files (`.mp3`, `.wav`, etc.).
-
-### 3. 🎤 Voice Prompting (Speech-to-Text)
-- Dedicated microphone button in the VS Code master panel.
-- Speak naturally to dictate prompts directly into the prompt box without typing.
-
-### 4. 🎛️ Minimalist Browser Extension UI
-- **Zero bloat**: Heavy UI and local AI processing remain 100% inside VS Code.
-- **Master ON/OFF Toggle**: Easily disable the bridge with one click.
-- **Status Indicators**: Real-time connection badge (Connected / Connecting / Disconnected).
-- **Tab Workforce Selector (Max 3)**: Select or deselect individual AI tabs (ChatGPT, Claude, Gemini) with live colored status dots:
-  - 🟢 **Green**: Connected & tab detected
-  - 🟡 **Yellow/Blue**: Connecting / busy
-  - 🔴 **Red**: Disconnected / tab offline
-
-### 5. 🛡️ Privacy Shield & Emergency Stop
-- **Auto-Redaction**: Scrubs API keys, passwords, bearer tokens, IP addresses, and personal filesystem paths before prompts leave your machine.
-- **Human Approval Gate**: Optional confirmation modal before external web AI is queried.
-- **🛑 Emergency Killswitch**: Instantly aborts all active web AI executions with one click.
+Silknet v1.1 connects your local development workflow directly to active web browser sessions of **ChatGPT**, **Claude**, and **Gemini**. By operating directly through authenticated browser tabs, Silknet provides access to frontier models without recurring API billing, usage meters, or middleman servers.
 
 ---
 
-## 🚀 Quick Setup Guide
+## Core Capabilities
 
-### Step 1: Start the Local Bridge Server
+### 1. Multi-Tab Consensus Engine
+* **Concurrent Dispatch**: Broadcasts queries simultaneously to active ChatGPT, Claude, and Gemini tabs.
+* **Independent Stream Resolution**: Each provider tab runs an isolated observer that stabilizes responses as soon as generation completes, avoiding cross-tab blocking or slow-model bottlenecks.
+* **Unified Local Synthesis**: Consolidates perspectives into a structured comparison (`Claude said...`, `ChatGPT suggested...`, `Gemini recommended...`) and generates a cohesive synthesis using local models (via Ollama at `127.0.0.1:11434` or the built-in heuristic synthesizer).
+
+### 2. Native DOM File Attachments
+* **Direct DataTransfer Pipeline**: Uses the browser's native `DataTransfer` and file input APIs to attach real binary files and images directly to chat composers.
+* **Verification & Limits**: Enforces a 20 MB total payload ceiling and a maximum of 5 files per prompt.
+* **Format Filtering**: Automatically validates file types to ensure compatibility and prevent browser crashes, explicitly rejecting unsupported 3D, high-bitrate video, and raw audio files.
+
+### 3. Voice Dictation
+* **Hands-Free Prompting**: Built-in speech-to-text input within the editor sidebar allows you to dictate complex technical queries directly without breaking your typing workflow.
+
+### 4. Privacy Shield & Security Controls
+* **Automatic Pattern Redaction**: Client-side inspection strips API credentials, private tokens, internal IP addresses, and user-specific filesystem paths before prompts leave the local environment.
+* **Human-in-the-Loop Approval Gate**: Configurable confirmation requirement prior to any prompt dispatch.
+* **Emergency Killswitch**: Immediate single-click termination signal that interrupts in-flight web generations and halts pending background tasks.
+
+---
+
+## Getting Started
+
+### Prerequisites
+* **Node.js**: v18.0.0 or later
+* **Google Chrome** (or Chromium-based browser: Edge, Brave, Arc, Opera)
+* **VS Code** (or Cursor / Windsurf)
+
+---
+
+### 1. Launch the Local Server
+The bridge server coordinates communication between your code editor and browser tabs:
+
 ```bash
 cd server
 npm install
 npm start
 ```
-*Server runs locally at `http://127.0.0.1:4040`.*
+*The daemon listens on `http://127.0.0.1:4040`.*
 
-### Step 2: Install Browser Extension
-1. Open Chrome (or Edge / Brave / Opera) and navigate to `chrome://extensions/`.
-2. Enable **Developer mode** (top-right toggle).
-3. Click **Load unpacked** and select the `extension` folder inside `silknet v1.1`.
-4. Open your favorite AI tabs: [ChatGPT](https://chatgpt.com), [Claude](https://claude.ai), and [Gemini](https://gemini.google.com).
+---
 
-### Step 3: Install the VS Code Extension
+### 2. Install the Browser Extension
+1. Open Chrome and navigate to `chrome://extensions/`.
+2. Toggle on **Developer mode** in the upper right corner.
+3. Click **Load unpacked** and select the `extension` directory inside `Silknet v1.1`.
+4. Open your model tabs:
+   * [ChatGPT](https://chatgpt.com)
+   * [Claude](https://claude.ai)
+   * [Gemini](https://gemini.google.com)
+5. Pin the Silknet extension to confirm connected tab indicators turn green.
+
+---
+
+### 3. Install the VS Code Extension
 1. Open VS Code.
-2. Go to the Extensions view (`Ctrl+Shift+X`).
-3. Click the `...` (Views and More Actions) menu in the top-right corner of the Extensions pane.
-4. Select **Install from VSIX...** and pick `silknet-1.1.0.vsix` located in `vscode/` or `release/`.
-5. Click the Silknet bridge icon in the Activity Bar to launch the Consensus Panel!
+2. Press `Ctrl+Shift+X` to open the Extensions pane.
+3. Select `...` (More Actions) in the top-right corner and choose **Install from VSIX...**.
+4. Select `silknet-1.1.0.vsix` located in `vscode/` or `release/`.
+5. Click the Silknet icon in the Activity Bar to open the Master Panel.
 
 ---
 
-## ⌨️ Keyboard Shortcuts (VS Code)
+## Editor Keybindings
 
-| Command | Shortcut | Description |
+| Command | Shortcut | Purpose |
 |---|---|---|
-| `tabBridge.consensusAI` | `Ctrl+Alt+C` | Query up to 3 Browser AIs simultaneously & synthesize with Local AI |
-| `tabBridge.askAI` | `Ctrl+Alt+A` | Ask single active Browser AI |
-| `tabBridge.sendSelection` | `Ctrl+Alt+S` | Send highlighted code to Browser AI |
-| `tabBridge.checkStatus` | Click status bar | View connected tabs and health |
+| `tabBridge.consensusAI` | `Ctrl+Alt+C` | Query all active browser models and synthesize consensus |
+| `tabBridge.askAI` | `Ctrl+Alt+A` | Query the currently selected primary browser model |
+| `tabBridge.sendSelection` | `Ctrl+Alt+S` | Dispatch highlighted code selection to browser model |
+| `tabBridge.checkStatus` | Click Status Bar | Display active tab connectivity and daemon health |
 
 ---
 
-## 🔒 Security & Privacy Guarantees
-- Zero cloud servers: all communication happens strictly over `127.0.0.1` (localhost).
-- No credentials or cookies stored.
-- Fully compatible with Ollama local models (`qwen2.5`, `gemma2`, `llama3.2`).
+## Technical Specifications
+
+| Parameter | Specification |
+|---|---|
+| **Architecture** | Manifest V3 Chrome Extension + Local Node.js WebSocket Daemon |
+| **Network Boundary** | Strict loopback (`127.0.0.1`), zero outbound telemetry |
+| **Max Concurrent Models** | 3 tabs (ChatGPT, Claude, Gemini) |
+| **Attachment Capacity** | Up to 5 files, 20 MB cumulative size limit |
+| **Local Synthesis** | Ollama integration (`qwen2.5`, `llama3.2`, `gemma2`) with fallback heuristic engine |
+| **Platform Compatibility** | Windows, macOS, Linux |
+
+---
+
+## License
+
+Distributed under the MIT License. Open source and free for personal and commercial use.
