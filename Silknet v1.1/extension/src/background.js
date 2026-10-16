@@ -1,11 +1,18 @@
 // Silknet v1.1 Background Service Worker
 // Coordinates WebSocket bridge to the local server, manages tab filtering (max 3), and handles parallel multi-tab execution.
+// Fixed: Service worker eviction resilience — content scripts send results independently via chrome.runtime.sendMessage
 
 const BRIDGE_WS_URL = 'ws://127.0.0.1:4040/ws';
 let ws = null;
 let reconnectTimer = null;
 let isEnabled = true;
 let selectedTabs = ['chatgpt', 'claude', 'gemini'];
+
+// Track which request IDs we've already forwarded to avoid duplicates
+const forwardedResults = new Set();
+// Track active operations to keep service worker alive
+let activeOps = 0;
+let keepAliveInterval = null;
 
 console.log('[Silknet v1.1 Worker] Service worker initialized');
 
@@ -21,6 +28,27 @@ function safeSend(data) {
   return false;
 }
 
+// Keep service worker alive during active operations
+function startKeepAlive() {
+  activeOps++;
+  if (!keepAliveInterval) {
+    keepAliveInterval = setInterval(() => {
+      // Any activity prevents service worker eviction
+      if (activeOps > 0) {
+        safeSend({ type: 'PING' });
+      }
+    }, 15000);
+  }
+}
+
+function stopKeepAlive() {
+  activeOps = Math.max(0, activeOps - 1);
+  if (activeOps <= 0 && keepAliveInterval) {
+    clearInterval(keepAliveInterval);
+    keepAliveInterval = null;
+  }
+}
+
 // Initialize settings from chrome.storage
 chrome.storage.local.get({ enabled: true, selectedTabs: ['chatgpt', 'claude', 'gemini'] }, (data) => {
   isEnabled = data.enabled;
@@ -30,7 +58,7 @@ chrome.storage.local.get({ enabled: true, selectedTabs: ['chatgpt', 'claude', 'g
   }
 });
 
-// Listen for messages from popup
+// Listen for messages from popup AND from content scripts
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'TOGGLE_MASTER') {
     isEnabled = Boolean(msg.enabled);
@@ -62,7 +90,54 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     });
     return true; // Keep message channel open for async response
   }
+
+  // === CRITICAL FIX: Content script sends results independently ===
+  // This handles results even if the service worker was restarted mid-operation
+  if (msg.type === 'PROMPT_RESULT_FROM_CONTENT') {
+    const reqId = msg.id;
+    console.log(`[Silknet v1.1 Worker] 📬 Received independent result from content script: ${msg.provider} (${reqId})`);
+
+    // Avoid sending duplicate results
+    if (!forwardedResults.has(reqId)) {
+      forwardedResults.add(reqId);
+
+      // Clean up old entries after 5 minutes
+      setTimeout(() => forwardedResults.delete(reqId), 300000);
+
+      // Ensure WebSocket is connected before forwarding
+      ensureConnectedThenSend({
+        type: 'PROMPT_RESULT',
+        id: reqId,
+        provider: msg.provider,
+        success: msg.success,
+        reply: msg.reply || '',
+        error: msg.error,
+      });
+    }
+
+    stopKeepAlive();
+    sendResponse({ received: true });
+    return false;
+  }
 });
+
+// Ensure we're connected to the server, then send the message
+async function ensureConnectedThenSend(data) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    safeSend(data);
+    return;
+  }
+
+  // Try to reconnect first
+  try {
+    await connectBridge();
+    // Wait a moment for the connection to establish
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    safeSend(data);
+  } catch {
+    console.warn('[Silknet v1.1 Worker] Could not reconnect to forward result');
+  }
+}
 
 async function connectBridge() {
   if (!isEnabled) return;
@@ -103,9 +178,14 @@ async function connectBridge() {
         console.log('[Silknet v1.1 Worker] Received server message:', msg.type);
 
         if (msg.type === 'EXECUTE_PROMPT') {
-          await handleExecuteRequest(msg);
+          // Fire-and-forget: don't await so we don't block other messages
+          handleExecuteRequest(msg).catch((err) => {
+            console.error('[Silknet v1.1 Worker] handleExecuteRequest error:', err);
+          });
         } else if (msg.type === 'EXECUTE_MULTI_PROMPT') {
-          await handleMultiExecuteRequest(msg);
+          handleMultiExecuteRequest(msg).catch((err) => {
+            console.error('[Silknet v1.1 Worker] handleMultiExecuteRequest error:', err);
+          });
         } else if (msg.type === 'ABORT_EXECUTION') {
           console.log('[Silknet v1.1 Worker] 🛑 Received ABORT_EXECUTION from server');
           const tabs = await chrome.tabs.query({});
@@ -193,6 +273,8 @@ async function syncAllAiTabs() {
 async function handleExecuteRequest(msg) {
   const { id, prompt, provider, attachments } = msg;
 
+  startKeepAlive();
+
   try {
     const tab = await findTargetTab(provider);
     if (!tab || !tab.id) {
@@ -204,6 +286,8 @@ async function handleExecuteRequest(msg) {
 
     console.log(`[Silknet v1.1 Worker] Dispatching prompt to Tab ${tab.id} (${provider})...`);
 
+    // Send to content script — the content script will ALSO send the result
+    // independently via chrome.runtime.sendMessage as a backup
     const result = await chrome.tabs.sendMessage(tab.id, {
       type: 'EXECUTE_PROMPT',
       id,
@@ -211,23 +295,38 @@ async function handleExecuteRequest(msg) {
       attachments: attachments || [],
     });
 
-    safeSend({
-      type: 'PROMPT_RESULT',
-      id,
-      provider: result?.provider || provider,
-      success: result?.success ?? false,
-      reply: result?.reply || '',
-      error: result?.error,
-    });
+    // If we get here, the sendResponse channel worked (service worker survived)
+    // Forward the result if not already forwarded by the backup path
+    if (!forwardedResults.has(id)) {
+      forwardedResults.add(id);
+      setTimeout(() => forwardedResults.delete(id), 300000);
+
+      safeSend({
+        type: 'PROMPT_RESULT',
+        id,
+        provider: result?.provider || provider,
+        success: result?.success ?? false,
+        reply: result?.reply || '',
+        error: result?.error,
+      });
+    }
   } catch (err) {
-    safeSend({
-      type: 'PROMPT_RESULT',
-      id,
-      provider,
-      success: false,
-      reply: '',
-      error: err instanceof Error ? err.message : String(err),
-    });
+    // Only send error if the backup path hasn't already forwarded a success
+    if (!forwardedResults.has(id)) {
+      forwardedResults.add(id);
+      setTimeout(() => forwardedResults.delete(id), 300000);
+
+      safeSend({
+        type: 'PROMPT_RESULT',
+        id,
+        provider,
+        success: false,
+        reply: '',
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  } finally {
+    stopKeepAlive();
   }
 }
 
@@ -240,50 +339,56 @@ async function handleMultiExecuteRequest(msg) {
 
   console.log(`[Silknet v1.1 Worker] Executing multi-tab prompt across: ${providersToRun.join(', ')}`);
 
-  const dispatchPromises = providersToRun.map(async (provider) => {
-    try {
-      const tab = await findTargetTab(provider);
-      if (!tab || !tab.id) {
+  startKeepAlive();
+
+  try {
+    const dispatchPromises = providersToRun.map(async (provider) => {
+      try {
+        const tab = await findTargetTab(provider);
+        if (!tab || !tab.id) {
+          return {
+            provider,
+            success: false,
+            reply: '',
+            error: `Tab not open for ${provider}`,
+          };
+        }
+
+        await ensureContentScript(tab.id);
+
+        const result = await chrome.tabs.sendMessage(tab.id, {
+          type: 'EXECUTE_PROMPT',
+          id: `${id}_${provider}`,
+          prompt,
+          attachments: attachments || [],
+        });
+
+        return {
+          provider,
+          success: result?.success ?? false,
+          reply: result?.reply || '',
+          error: result?.error,
+        };
+      } catch (err) {
         return {
           provider,
           success: false,
           reply: '',
-          error: `Tab not open for ${provider}`,
+          error: err instanceof Error ? err.message : String(err),
         };
       }
+    });
 
-      await ensureContentScript(tab.id);
+    const results = await Promise.all(dispatchPromises);
 
-      const result = await chrome.tabs.sendMessage(tab.id, {
-        type: 'EXECUTE_PROMPT',
-        id: `${id}_${provider}`,
-        prompt,
-        attachments: attachments || [],
-      });
-
-      return {
-        provider,
-        success: result?.success ?? false,
-        reply: result?.reply || '',
-        error: result?.error,
-      };
-    } catch (err) {
-      return {
-        provider,
-        success: false,
-        reply: '',
-        error: err instanceof Error ? err.message : String(err),
-      };
-    }
-  });
-
-  const results = await Promise.all(dispatchPromises);
-
-  safeSend({
-    type: 'MULTI_PROMPT_RESULT',
-    id,
-    results,
-  });
+    safeSend({
+      type: 'MULTI_PROMPT_RESULT',
+      id,
+      results,
+    });
+  } finally {
+    stopKeepAlive();
+  }
 }
 
 async function ensureContentScript(tabId) {

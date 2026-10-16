@@ -44,15 +44,46 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'EXECUTE_PROMPT') {
     isAborted = false;
+    const requestId = message.id; // Track the request ID from the server
+
     handleExecutePrompt(message.prompt, message.attachments || [])
-      .then((result) => sendResponse(result))
-      .catch((err) => {
-        sendResponse({
-          success: false,
-          error: err instanceof Error ? err.message : String(err),
-          reply: '',
-          provider: PROVIDER,
+      .then((result) => {
+        const payload = {
+          type: 'PROMPT_RESULT_FROM_CONTENT',
+          id: requestId,
+          provider: result.provider || PROVIDER,
+          success: result.success,
+          reply: result.reply || '',
+        };
+
+        // PRIMARY: Send result independently to the background service worker.
+        // This works even if the service worker was restarted during our operation.
+        chrome.runtime.sendMessage(payload).catch(() => {
+          console.warn('[Silknet v1.1] Independent sendMessage failed (service worker may be restarting)');
         });
+
+        // SECONDARY: Also try the original sendResponse channel (works if SW survived)
+        try { sendResponse(result); } catch {}
+      })
+      .catch((err) => {
+        const errorPayload = {
+          type: 'PROMPT_RESULT_FROM_CONTENT',
+          id: requestId,
+          provider: PROVIDER,
+          success: false,
+          reply: '',
+          error: err instanceof Error ? err.message : String(err),
+        };
+
+        chrome.runtime.sendMessage(errorPayload).catch(() => {});
+        try {
+          sendResponse({
+            success: false,
+            error: err instanceof Error ? err.message : String(err),
+            reply: '',
+            provider: PROVIDER,
+          });
+        } catch {}
       });
     return true; // Keep channel open for async response
   }
