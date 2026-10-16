@@ -128,7 +128,7 @@ async function handleExecutePrompt(promptText, attachments) {
   await injectText(composer, promptText, PROVIDER);
 
   // 4. Trigger auto-send (waits for upload to finish and send button to be enabled)
-  await autoSend(composer, PROVIDER);
+  await autoSend(composer, PROVIDER, Boolean(attachments && attachments.length > 0));
 
   // 5. Wait for streaming response completion
   const reply = await waitForResponseCompletion(PROVIDER, baselineCount);
@@ -286,14 +286,16 @@ async function injectText(el, text, provider) {
   const isInput = el.tagName === 'INPUT';
 
   if (isTextArea || isInput) {
-    el.dispatchEvent(
-      new view.InputEvent('beforeinput', {
-        bubbles: true,
-        cancelable: true,
-        inputType: 'insertText',
-        data: text,
-      }),
-    );
+    try {
+      el.dispatchEvent(
+        new view.InputEvent('beforeinput', {
+          bubbles: true,
+          cancelable: true,
+          inputType: 'insertText',
+          data: text,
+        }),
+      );
+    } catch {}
 
     const proto = isTextArea ? view.HTMLTextAreaElement.prototype : view.HTMLInputElement.prototype;
     const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
@@ -307,7 +309,19 @@ async function injectText(el, text, provider) {
     el.dispatchEvent(new view.Event('input', { bubbles: true }));
     el.dispatchEvent(new view.Event('change', { bubbles: true }));
   } else {
-    // Rich text / ProseMirror / Quill
+    // Rich text / ProseMirror / Lexical / Quill (ChatGPT div, Claude, Gemini)
+    // Dispatch beforeinput first so rich-text state handlers (ProseMirror/Lexical) receive it
+    try {
+      el.dispatchEvent(
+        new view.InputEvent('beforeinput', {
+          bubbles: true,
+          cancelable: true,
+          inputType: 'insertText',
+          data: text,
+        }),
+      );
+    } catch {}
+
     const sel = view.getSelection();
     if (sel) {
       const range = el.ownerDocument.createRange();
@@ -318,15 +332,25 @@ async function injectText(el, text, provider) {
 
     let inserted = false;
     if (typeof el.ownerDocument.execCommand === 'function') {
-      inserted = el.ownerDocument.execCommand('insertText', false, text);
+      try {
+        inserted = el.ownerDocument.execCommand('insertText', false, text);
+      } catch {}
     }
 
     if (!inserted) {
-      el.textContent = text;
+      const p = el.querySelector('p');
+      if (p) {
+        p.textContent = text;
+      } else {
+        el.textContent = text;
+      }
     }
 
-    el.dispatchEvent(new view.InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+    try {
+      el.dispatchEvent(new view.InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+    } catch {}
     el.dispatchEvent(new view.Event('input', { bubbles: true }));
+    el.dispatchEvent(new view.Event('change', { bubbles: true }));
   }
 
   await sleep(300);
@@ -350,48 +374,58 @@ async function waitForSendButtonReady(provider, maxWaitMs = 6000) {
         return btn;
       }
     }
-    await sleep(200);
+    await sleep(250);
   }
 
   return findSendButton(provider);
 }
 
-async function autoSend(composerEl, provider) {
-  console.log(`[Silknet v1.1] Triggering Auto-Send on ${provider}...`);
+async function autoSend(composerEl, provider, hasAttachments = false) {
+  console.log(`[Silknet v1.1] Triggering Auto-Send on ${provider} (hasAttachments: ${hasAttachments})...`);
   const view = composerEl.ownerDocument.defaultView || window;
 
   // 1. Wait until send button is enabled (allows file attachments to finish uploading)
-  const sendBtn = await waitForSendButtonReady(provider, 6000);
+  // When files are attached, allow up to 25 seconds for upload to finish; otherwise 6 seconds
+  const maxWaitMs = hasAttachments ? 25000 : 6000;
+  const sendBtn = await waitForSendButtonReady(provider, maxWaitMs);
 
-  // 2. Click the send button with complete pointer/mouse sequence
-  let clicked = false;
-  if (sendBtn) {
-    try {
-      sendBtn.removeAttribute('disabled');
-      sendBtn.disabled = false;
-      sendBtn.focus();
-      sendBtn.dispatchEvent(new view.PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
-      sendBtn.dispatchEvent(new view.MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-      sendBtn.dispatchEvent(new view.PointerEvent('pointerup', { bubbles: true, cancelable: true }));
-      sendBtn.dispatchEvent(new view.MouseEvent('mouseup', { bubbles: true, cancelable: true }));
-      sendBtn.click();
-      clicked = true;
-      console.log(`[Silknet v1.1] Dispatched click to send button on ${provider}`);
-    } catch (e) {
-      console.warn(`[Silknet v1.1] Send button click error on ${provider}:`, e);
+  // 2. Click send button and verify generation starts (retry up to 4 times)
+  const maxAttempts = 4;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (isAborted) throw new Error('Execution aborted by user emergency stop.');
+
+    // If generation already started, we're done
+    if (isStopButtonPresent(provider)) {
+      console.log(`[Silknet v1.1] Generation confirmed started on ${provider}`);
+      return;
     }
-  }
 
-  await sleep(400);
+    const currentBtn = findSendButton(provider) || sendBtn;
+    if (currentBtn) {
+      try {
+        currentBtn.removeAttribute('disabled');
+        currentBtn.disabled = false;
+        currentBtn.focus();
+        currentBtn.dispatchEvent(new view.PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+        currentBtn.dispatchEvent(new view.MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+        currentBtn.dispatchEvent(new view.PointerEvent('pointerup', { bubbles: true, cancelable: true }));
+        currentBtn.dispatchEvent(new view.MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+        currentBtn.click();
+        console.log(`[Silknet v1.1] Dispatched click to send button on ${provider} (attempt ${attempt})`);
+      } catch (e) {
+        console.warn(`[Silknet v1.1] Send button click error on ${provider}:`, e);
+      }
+    }
 
-  // 3. Fallback: If still has text in composer and generation hasn't started, dispatch Enter key
-  const stillHasText = (composerEl.value || composerEl.textContent || '').trim().length > 0;
-  const stopPresent = isStopButtonPresent(provider);
+    await sleep(500);
 
-  if (!stopPresent && (!clicked || stillHasText)) {
-    console.log(`[Silknet v1.1] Triggering Enter key fallback on ${provider}...`);
+    if (isStopButtonPresent(provider)) {
+      console.log(`[Silknet v1.1] Generation confirmed started on ${provider}`);
+      return;
+    }
+
+    // 3. Fallback: Dispatch Enter key on composer
     composerEl.focus();
-
     const enterOpts = {
       key: 'Enter',
       code: 'Enter',
@@ -408,6 +442,13 @@ async function autoSend(composerEl, provider) {
     composerEl.dispatchEvent(new view.KeyboardEvent('keydown', enterOpts));
     composerEl.dispatchEvent(new view.KeyboardEvent('keypress', enterOpts));
     composerEl.dispatchEvent(new view.KeyboardEvent('keyup', enterOpts));
+
+    await sleep(600);
+
+    if (isStopButtonPresent(provider)) {
+      console.log(`[Silknet v1.1] Generation confirmed started via Enter key on ${provider}`);
+      return;
+    }
   }
 }
 
@@ -453,11 +494,11 @@ function findSendButton(provider) {
 
 function countAssistantTurns(provider) {
   if (provider === 'chatgpt') {
-    return document.querySelectorAll('article, [data-message-author-role="assistant"]').length;
+    return document.querySelectorAll('div[data-message-author-role="assistant"], article').length;
   }
   if (provider === 'claude') {
     return document.querySelectorAll(
-      'div[data-is-streaming], div.font-claude-message, [data-message-author="assistant"], div[class*="font-claude-message"], [data-testid="message-content"]'
+      '.standard-markdown, div.font-claude-message, div[class*="font-claude"], div.font-claude-response, [data-message-author="assistant"], [data-testid="message-content"], div.grid-cols-1, div.prose'
     ).length;
   }
   if (provider === 'gemini') {
@@ -478,6 +519,7 @@ async function waitForResponseCompletion(provider, baselineCount, maxTimeoutMs =
     }
     if (isStopButtonPresent(provider) || countAssistantTurns(provider) > baselineCount) {
       started = true;
+      console.log(`[Silknet v1.1] Generation confirmed started on ${provider}`);
       break;
     }
     await sleep(250);
@@ -495,57 +537,91 @@ async function waitForResponseCompletion(provider, baselineCount, maxTimeoutMs =
     const currentReply = extractLatestReply(provider);
 
     if (stopPresent) {
+      started = true;
       stableTicks = 0;
       lastText = currentReply;
     } else {
-      if (currentReply.length > 0 && currentReply === lastText) {
-        stableTicks++;
-        if (stableTicks >= 3) { // 3 consecutive ticks of stability (~1.2s)
-          console.log(`[Silknet v1.1] AI generation complete and verified stable on ${provider}.`);
-          return currentReply;
+      if (currentReply.length > 0) {
+        if (currentReply === lastText) {
+          stableTicks++;
+          if (stableTicks >= 3) { // 3 consecutive ticks of stability (~1.2s)
+            console.log(`[Silknet v1.1] AI generation complete and verified stable on ${provider} (${currentReply.length} chars).`);
+            return currentReply;
+          }
+        } else {
+          lastText = currentReply;
+          stableTicks = 0;
         }
-      } else {
-        lastText = currentReply;
-        stableTicks = 0;
+      } else if (started) {
+        // Generation started, stop button gone, but primary selector missed text. Check broad fallback.
+        const fallbackText = extractBroadFallback(provider);
+        if (fallbackText.length > 0) {
+          console.log(`[Silknet v1.1] AI generation captured via broad fallback on ${provider} (${fallbackText.length} chars).`);
+          return fallbackText;
+        }
       }
     }
 
     await sleep(400);
   }
 
-  return extractLatestReply(provider);
+  console.warn(`[Silknet v1.1] Max timeout reached on ${provider}, returning best available response.`);
+  return extractLatestReply(provider) || extractBroadFallback(provider);
 }
 
 function isStopButtonPresent(provider) {
-  let selectors = [];
   if (provider === 'chatgpt') {
-    selectors = [
+    const selectors = [
       'button[data-testid="stop-button"]',
       'button[aria-label="Stop generating"]',
       'button[aria-label="Stop streaming"]',
-      'button[aria-label*="Stop" i]'
+      'button[aria-label*="Stop" i]',
+      'button[data-testid*="stop" i]'
     ];
-  } else if (provider === 'claude') {
-    selectors = [
+    for (const s of selectors) {
+      try {
+        const el = document.querySelector(s);
+        if (el && isVisible(el)) return true;
+      } catch {}
+    }
+    return false;
+  }
+
+  if (provider === 'claude') {
+    // Anthropic native streaming indicator attribute
+    if (document.querySelector('[data-is-streaming="true"], [data-is-streaming="1"]')) {
+      return true;
+    }
+    const selectors = [
       'button[aria-label="Stop Response"]',
       'button[aria-label*="Stop" i]',
       'button[data-testid="stop-button"]',
       'button[data-testid*="stop"]'
     ];
-  } else if (provider === 'gemini') {
-    selectors = [
+    for (const s of selectors) {
+      try {
+        const el = document.querySelector(s);
+        if (el && isVisible(el)) return true;
+      } catch {}
+    }
+    return false;
+  }
+
+  if (provider === 'gemini') {
+    const selectors = [
       'button[aria-label*="Stop" i]',
       'button[data-test-id*="stop" i]',
       'button.stop-button'
     ];
+    for (const s of selectors) {
+      try {
+        const el = document.querySelector(s);
+        if (el && isVisible(el)) return true;
+      } catch {}
+    }
+    return false;
   }
 
-  for (const s of selectors) {
-    try {
-      const el = document.querySelector(s);
-      if (el && isVisible(el)) return true;
-    } catch {}
-  }
   return false;
 }
 
@@ -554,14 +630,21 @@ function extractLatestReply(provider) {
   if (provider === 'chatgpt') {
     elements = Array.from(document.querySelectorAll('div[data-message-author-role="assistant"]'));
     if (elements.length === 0) {
+      elements = Array.from(document.querySelectorAll('article div.markdown, div.agent-turn, article div.prose'));
+    }
+    if (elements.length === 0) {
       elements = Array.from(document.querySelectorAll('article'));
     }
   } else if (provider === 'claude') {
-    elements = Array.from(
-      document.querySelectorAll(
-        'div.font-claude-message, [data-message-author="assistant"], div[class*="font-claude-message"], [data-testid="message-content"]'
-      )
-    );
+    // In modern Claude, .standard-markdown directly contains the clean response text
+    elements = Array.from(document.querySelectorAll('.standard-markdown'));
+    if (elements.length === 0) {
+      elements = Array.from(
+        document.querySelectorAll(
+          'div.font-claude-message, div[class*="font-claude"], div.font-claude-response, [data-message-author="assistant"], [data-testid="message-content"], div.grid-cols-1, div.prose'
+        )
+      );
+    }
   } else if (provider === 'gemini') {
     elements = Array.from(document.querySelectorAll('model-response, message-content, [data-test-id="model-response"]'));
   }
@@ -570,10 +653,32 @@ function extractLatestReply(provider) {
   const last = elements[elements.length - 1];
 
   const clone = last.cloneNode(true);
-  const buttons = clone.querySelectorAll('.copy-button, button[aria-label*="Copy" i], button[title*="Copy" i], svg');
+  const buttons = clone.querySelectorAll('.copy-button, button[aria-label*="Copy" i], button[title*="Copy" i], button, svg, [role="button"]');
   buttons.forEach((b) => b.remove());
 
   return (clone.textContent || '').trim();
+}
+
+function extractBroadFallback(provider) {
+  try {
+    if (provider === 'claude') {
+      const msgs = document.querySelectorAll('main div.prose, main .standard-markdown, div[class*="conversation"] p');
+      if (msgs.length > 0) {
+        return (msgs[msgs.length - 1].textContent || '').trim();
+      }
+    } else if (provider === 'chatgpt') {
+      const msgs = document.querySelectorAll('main .markdown, main div[data-message-author-role="assistant"], main p');
+      if (msgs.length > 0) {
+        return (msgs[msgs.length - 1].textContent || '').trim();
+      }
+    } else if (provider === 'gemini') {
+      const msgs = document.querySelectorAll('main model-response, main message-content, main .response-container');
+      if (msgs.length > 0) {
+        return (msgs[msgs.length - 1].textContent || '').trim();
+      }
+    }
+  } catch {}
+  return '';
 }
 
 function isVisible(el) {

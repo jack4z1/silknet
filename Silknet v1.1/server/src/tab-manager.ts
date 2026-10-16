@@ -55,8 +55,8 @@ interface PendingMultiRequest {
 // Constraints specified by user
 const FORBIDDEN_EXTENSIONS = [
   '.obj', '.gltf', '.glb', '.stl', '.blend', '.fbx', '.3ds', '.dae', '.step', '.iges',
-  '.mp4', '.mov', '.avi', '.mkv', '.webm', '.flv', '.wmv', '.m4v',
-  '.mp3', '.wav', '.aac', '.flac', '.ogg', '.m4a', '.wma'
+  '.mp4', '.mov', '.avi', '.mkv', '.webm', '.flv', '.wmv', '.m4v', '.3gp',
+  '.mp3', '.wav', '.aac', '.flac', '.ogg', '.m4a', '.wma', '.aiff', '.opus'
 ];
 const MAX_FILE_COUNT = 5;
 const MAX_TOTAL_SIZE = 20 * 1024 * 1024; // 20 MB
@@ -330,7 +330,8 @@ export class TabManager {
         clearTimeout(pending.timer);
         this.pendingRequests.delete(id);
         const durationMs = Date.now() - pending.startTime;
-        console.log(`[TabManager] ✅ Received reply from ${provider.toUpperCase()} in ${durationMs}ms`);
+        const provName = String(provider || pending.provider || 'unknown').toUpperCase();
+        console.log(`[TabManager] ✅ Received reply from ${provName} in ${durationMs}ms`);
         pending.resolve({
           provider: provider || pending.provider,
           success: Boolean(success),

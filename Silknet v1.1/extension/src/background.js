@@ -355,55 +355,15 @@ async function handleMultiExecuteRequest(msg) {
 
   console.log(`[Silknet v1.1 Worker] Executing multi-tab prompt across: ${providersToRun.join(', ')}`);
 
-  startKeepAlive();
-
-  try {
-    const dispatchPromises = providersToRun.map(async (provider) => {
-      try {
-        const tab = await findTargetTab(provider);
-        if (!tab || !tab.id) {
-          return {
-            provider,
-            success: false,
-            reply: '',
-            error: `Tab not open for ${provider}`,
-          };
-        }
-
-        await ensureContentScript(tab.id);
-
-        const result = await chrome.tabs.sendMessage(tab.id, {
-          type: 'EXECUTE_PROMPT',
-          id: `${id}_${provider}`,
-          prompt,
-          attachments: attachments || [],
-        });
-
-        return {
-          provider,
-          success: result?.success ?? false,
-          reply: result?.reply || '',
-          error: result?.error,
-        };
-      } catch (err) {
-        return {
-          provider,
-          success: false,
-          reply: '',
-          error: err instanceof Error ? err.message : String(err),
-        };
-      }
+  for (const provider of providersToRun) {
+    handleExecuteRequest({
+      id: `${id}_${provider}`,
+      prompt,
+      provider,
+      attachments: attachments || [],
+    }).catch((err) => {
+      console.warn(`[Silknet v1.1 Worker] Multi-execute error for ${provider}:`, err);
     });
-
-    const results = await Promise.all(dispatchPromises);
-
-    safeSend({
-      type: 'MULTI_PROMPT_RESULT',
-      id,
-      results,
-    });
-  } finally {
-    stopKeepAlive();
   }
 }
 
